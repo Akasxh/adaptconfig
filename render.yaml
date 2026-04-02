@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: finspark-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile.backend
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./data/finspark.db
+    healthCheckPath: /health
+    disk:
+      name: finspark-data
+      mountPath: /app/data
+      sizeGB: 1
+
+  - type: web
+    name: finspark-frontend
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=3600
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
