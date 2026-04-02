@@ -11,8 +11,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -608,6 +606,13 @@ class TestJWT:
 # ---------------------------------------------------------------------------
 
 
+def _run(coro):
+    """Run an async coroutine synchronously using a fresh event loop."""
+    import asyncio
+
+    return asyncio.run(coro)
+
+
 class TestAuditService:
     """Tests for AuditService using a mocked AsyncSession."""
 
@@ -619,35 +624,41 @@ class TestAuditService:
         mock_db.flush = AsyncMock()
         return AuditService(mock_db), mock_db
 
-    @pytest.mark.asyncio
-    async def test_log_creates_audit_entry(self) -> None:
+    def test_log_creates_audit_entry(self) -> None:
         from finspark.models.audit import AuditLog
 
         service, mock_db = self._make_service()
-        entry = await service.log(
-            tenant_id="tenant1",
-            actor="user@example.com",
-            action="create",
-            resource_type="configuration",
-            resource_id="cfg-001",
-        )
+
+        async def _run_test():
+            return await service.log(
+                tenant_id="tenant1",
+                actor="user@example.com",
+                action="create",
+                resource_type="configuration",
+                resource_id="cfg-001",
+            )
+
+        entry = _run(_run_test())
         assert isinstance(entry, AuditLog)
         mock_db.add.assert_called_once_with(entry)
         mock_db.flush.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_log_all_fields(self) -> None:
+    def test_log_all_fields(self) -> None:
         service, _ = self._make_service()
-        entry = await service.log(
-            tenant_id="t1",
-            actor="admin",
-            action="update",
-            resource_type="adapter",
-            resource_id="adp-999",
-            details={"before": "v1", "after": "v2"},
-            ip_address="192.168.1.1",
-            user_agent="Mozilla/5.0",
-        )
+
+        async def _run_test():
+            return await service.log(
+                tenant_id="t1",
+                actor="admin",
+                action="update",
+                resource_type="adapter",
+                resource_id="adp-999",
+                details={"before": "v1", "after": "v2"},
+                ip_address="192.168.1.1",
+                user_agent="Mozilla/5.0",
+            )
+
+        entry = _run(_run_test())
         assert entry.tenant_id == "t1"
         assert entry.actor == "admin"
         assert entry.action == "update"
@@ -655,64 +666,75 @@ class TestAuditService:
         assert entry.resource_id == "adp-999"
         assert entry.ip_address == "192.168.1.1"
         assert entry.user_agent == "Mozilla/5.0"
-        # details serialised to JSON
         assert json.loads(entry.details) == {"before": "v1", "after": "v2"}
 
-    @pytest.mark.asyncio
-    async def test_log_minimal_fields(self) -> None:
+    def test_log_minimal_fields(self) -> None:
         """Log with no optional fields – details/ip/user_agent should be None."""
         service, _ = self._make_service()
-        entry = await service.log(
-            tenant_id="t2",
-            actor="svc",
-            action="delete",
-            resource_type="configuration",
-            resource_id="cfg-002",
-        )
+
+        async def _run_test():
+            return await service.log(
+                tenant_id="t2",
+                actor="svc",
+                action="delete",
+                resource_type="configuration",
+                resource_id="cfg-002",
+            )
+
+        entry = _run(_run_test())
         assert entry.details is None
         assert entry.ip_address is None
         assert entry.user_agent is None
 
-    @pytest.mark.asyncio
-    async def test_log_empty_details_dict(self) -> None:
+    def test_log_empty_details_dict(self) -> None:
         """An empty dict is falsy in Python, so details={} stores None (source behaviour)."""
         service, _ = self._make_service()
-        entry = await service.log(
-            tenant_id="t3",
-            actor="svc",
-            action="deploy",
-            resource_type="adapter",
-            resource_id="adp-1",
-            details={},
-        )
+
+        async def _run_test():
+            return await service.log(
+                tenant_id="t3",
+                actor="svc",
+                action="deploy",
+                resource_type="adapter",
+                resource_id="adp-1",
+                details={},
+            )
+
+        entry = _run(_run_test())
         # {} is falsy -> the source uses `json.dumps(details) if details else None`
         assert entry.details is None
 
-    @pytest.mark.asyncio
-    async def test_log_nested_details(self) -> None:
+    def test_log_nested_details(self) -> None:
         """Nested dict in details round-trips through JSON."""
         details = {"meta": {"key": "val"}, "count": 3}
         service, _ = self._make_service()
-        entry = await service.log(
-            tenant_id="t4",
-            actor="svc",
-            action="rollback",
-            resource_type="configuration",
-            resource_id="cfg-003",
-            details=details,
-        )
+
+        async def _run_test():
+            return await service.log(
+                tenant_id="t4",
+                actor="svc",
+                action="rollback",
+                resource_type="configuration",
+                resource_id="cfg-003",
+                details=details,
+            )
+
+        entry = _run(_run_test())
         assert json.loads(entry.details) == details
 
-    @pytest.mark.asyncio
-    async def test_flush_is_called(self) -> None:
+    def test_flush_is_called(self) -> None:
         service, mock_db = self._make_service()
-        await service.log(
-            tenant_id="t5",
-            actor="svc",
-            action="create",
-            resource_type="configuration",
-            resource_id="cfg-004",
-        )
+
+        async def _run_test():
+            await service.log(
+                tenant_id="t5",
+                actor="svc",
+                action="create",
+                resource_type="configuration",
+                resource_id="cfg-004",
+            )
+
+        _run(_run_test())
         mock_db.flush.assert_awaited_once()
 
 
