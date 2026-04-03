@@ -50,19 +50,7 @@ async def async_engine():
     connect_args: dict[str, Any] = {"check_same_thread": False} if _IS_SQLITE else {}
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, connect_args=connect_args)
 
-    from app.core.database import Base  # noqa: PLC0415
-    from app.db.models import (  # noqa: F401,PLC0415
-        Adapter,
-        AdapterVersion,
-        AuditLog,
-        Configuration,
-        ConfigurationVersion,
-        FieldMapping,
-        Hook,
-        Integration,
-        Tenant,
-        TestResult,
-    )
+    from finspark.models.base import Base  # noqa: PLC0415
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -113,7 +101,7 @@ async def db_session(db_connection: AsyncConnection) -> AsyncGenerator[AsyncSess
 
 @pytest_asyncio.fixture()
 async def app_instance():
-    from app.main import app  # noqa: PLC0415
+    from finspark.main import app  # noqa: PLC0415
 
     return app
 
@@ -127,7 +115,7 @@ async def client(
     Async HTTP client wired to the ASGI app.
     Overrides get_db so every route shares the rolled-back test session.
     """
-    from app.core.database import get_db  # noqa: PLC0415
+    from finspark.core.db import get_db  # noqa: PLC0415
 
     async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
@@ -170,40 +158,30 @@ def tenant_headers(mock_tenant: dict[str, Any], auth_token: str) -> dict[str, st
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture()
-async def mock_tenant(db_session: AsyncSession) -> dict[str, Any]:
-    """Inserts a Tenant row and returns its plain-dict representation."""
-    from app.db.models.tenant import Tenant  # noqa: PLC0415
-
+@pytest.fixture()
+def mock_tenant() -> dict[str, Any]:
+    """Returns a plain-dict tenant representation for use in tests."""
     tenant_id = str(uuid.uuid4())
-    data: dict[str, Any] = {
+    return {
         "id": tenant_id,
         "name": "Test Corp",
         "slug": f"test-corp-{tenant_id[:8]}",
         "plan": "enterprise",
         "is_active": True,
     }
-    db_session.add(Tenant(**data))
-    await db_session.flush()
-    return data
 
 
-@pytest_asyncio.fixture()
-async def other_tenant(db_session: AsyncSession) -> dict[str, Any]:
+@pytest.fixture()
+def other_tenant() -> dict[str, Any]:
     """A second independent tenant for cross-tenant isolation tests."""
-    from app.db.models.tenant import Tenant  # noqa: PLC0415
-
     tenant_id = str(uuid.uuid4())
-    data: dict[str, Any] = {
+    return {
         "id": tenant_id,
         "name": "Rival Corp",
         "slug": f"rival-corp-{tenant_id[:8]}",
         "plan": "standard",
         "is_active": True,
     }
-    db_session.add(Tenant(**data))
-    await db_session.flush()
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +440,8 @@ def mock_gemini(mock_llm_response: dict[str, Any]):
 @pytest.fixture()
 def mock_openai(mock_llm_response: dict[str, Any]):
     """
-    Legacy: patches openai.AsyncOpenAI. Yields the mock client for assertion in tests.
+    Legacy: returns a mock async client shaped like openai.AsyncOpenAI.
+    Does not require the openai package to be installed.
     """
     completion = MagicMock()
     completion.choices = [
@@ -477,9 +456,7 @@ def mock_openai(mock_llm_response: dict[str, Any]):
 
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(return_value=completion)
-
-    with patch("openai.AsyncOpenAI", return_value=mock_client):
-        yield mock_client
+    yield mock_client
 
 
 # ---------------------------------------------------------------------------

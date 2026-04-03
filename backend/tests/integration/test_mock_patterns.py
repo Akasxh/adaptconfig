@@ -64,7 +64,7 @@ class TestLLMMockPatterns:
             side_effect=Exception("OpenAI API timeout")
         )
 
-        with patch("openai.AsyncOpenAI", return_value=broken_client):
+        with patch("finspark.services.llm.client.get_llm_client", return_value=broken_client):
             resp = await client.post(
                 "/api/v1/config/generate",
                 json={"text": sample_brd_text},
