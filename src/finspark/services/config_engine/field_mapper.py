@@ -168,17 +168,41 @@ class ConfigGenerator:
         adapter_version: dict[str, Any],
     ) -> dict[str, Any]:
         """Generate a complete integration configuration."""
-        # Extract source fields from parsed document
-        source_fields = [
+        # Separate request fields (need mapping) from response fields (informational only)
+        all_fields = parsed_result.get("fields", [])
+        request_fields = [
             {"name": f.get("name", ""), "type": f.get("data_type", "string")}
-            for f in parsed_result.get("fields", [])
+            for f in all_fields
+            if "request" in (f.get("source_section", "") or "").lower()
         ]
+        # If no source_section info, use all fields as source
+        if not request_fields:
+            request_fields = [
+                {"name": f.get("name", ""), "type": f.get("data_type", "string")}
+                for f in all_fields
+            ]
+        source_fields = request_fields
 
         # Extract target fields from adapter schema
         target_fields = self._extract_adapter_fields(adapter_version)
 
-        # Map fields
+        # Also extract from response schema for response field mapping
+        response_target_fields = self._extract_response_fields(adapter_version)
+
+        # Map request fields to adapter request schema
         mappings = self.field_mapper.map_fields(source_fields, target_fields)
+
+        # Map response fields from document to adapter response schema
+        response_doc_fields = [
+            {"name": f.get("name", ""), "type": f.get("data_type", "string")}
+            for f in all_fields
+            if "response" in (f.get("source_section", "") or "").lower()
+        ]
+        if response_doc_fields and response_target_fields:
+            response_mappings = self.field_mapper.map_fields(
+                response_doc_fields, response_target_fields
+            )
+            mappings.extend(response_mappings)
 
         # Build configuration
         config = {
@@ -223,6 +247,26 @@ class ConfigGenerator:
                     "name": name,
                     "type": prop.get("type", "string"),
                     "required": str(name in schema.get("required", [])),
+                }
+            )
+
+        return fields
+
+    def _extract_response_fields(self, adapter_version: dict[str, Any]) -> list[dict[str, str]]:
+        """Extract target fields from adapter response schema."""
+        fields: list[dict[str, str]] = []
+        schema = adapter_version.get("response_schema", {})
+
+        if isinstance(schema, str):
+            schema = json.loads(schema)
+
+        properties = schema.get("properties", {})
+        for name, prop in properties.items():
+            fields.append(
+                {
+                    "name": name,
+                    "type": prop.get("type", "string"),
+                    "required": "false",
                 }
             )
 

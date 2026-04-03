@@ -60,21 +60,25 @@ function formatDate(dateStr: string): string {
 
 type ParsedResult = {
   endpoints?: Array<{ path: string; method: string; description?: string; summary?: string }>;
-  field_definitions?: Array<{
+  fields?: Array<{
     name: string;
-    field_type?: string;
-    required?: boolean;
+    data_type?: string;
+    is_required?: boolean;
     description?: string;
+    sample_value?: string;
     source_section?: string;
   }>;
-  auth_requirements?: Array<{ scheme: string; description?: string; header_name?: string }>;
+  auth_requirements?: Array<{
+    auth_type: string;
+    details?: { name?: string; scheme?: string; in?: string };
+  }>;
   title?: string;
-  description?: string;
-  word_count?: number;
-  page_count?: number;
-  base_urls?: string[];
+  summary?: string;
+  services_identified?: string[];
+  confidence_score?: number;
+  sections?: Record<string, string>;
+  raw_entities?: string[];
   parse_errors?: string[];
-  parse_warnings?: string[];
 };
 
 type DocumentDetail = Document & {
@@ -111,7 +115,7 @@ function DetailModal({
     },
     {
       id: "fields",
-      label: `Fields${parsed?.field_definitions?.length ? ` (${parsed.field_definitions.length})` : ""}`,
+      label: `Fields${parsed?.fields?.length ? ` (${parsed.fields.length})` : ""}`,
       icon: Layers,
     },
     { id: "auth", label: "Auth", icon: Shield },
@@ -240,23 +244,17 @@ function DetailModal({
                       <p className="text-sm text-gray-200">{parsed.title}</p>
                     </div>
                   )}
-                  {parsed.description && (
+                  {parsed.summary && (
                     <div>
-                      <p className="text-xs font-medium text-gray-500 mb-1">Description</p>
-                      <p className="text-sm text-gray-300 leading-relaxed">{parsed.description}</p>
+                      <p className="text-xs font-medium text-gray-500 mb-1">Summary</p>
+                      <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-line">{parsed.summary}</p>
                     </div>
                   )}
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="rounded-lg bg-gray-800/50 p-3">
-                      <p className="text-xs text-gray-500">Pages</p>
-                      <p className="mt-1 text-lg font-bold text-white">
-                        {parsed.page_count ?? "—"}
-                      </p>
-                    </div>
-                    <div className="rounded-lg bg-gray-800/50 p-3">
-                      <p className="text-xs text-gray-500">Words</p>
-                      <p className="mt-1 text-lg font-bold text-white">
-                        {parsed.word_count?.toLocaleString() ?? "—"}
+                      <p className="text-xs text-gray-500">Confidence</p>
+                      <p className="mt-1 text-lg font-bold text-emerald-400">
+                        {parsed.confidence_score != null ? `${Math.round(parsed.confidence_score * 100)}%` : "—"}
                       </p>
                     </div>
                     <div className="rounded-lg bg-gray-800/50 p-3">
@@ -268,23 +266,34 @@ function DetailModal({
                     <div className="rounded-lg bg-gray-800/50 p-3">
                       <p className="text-xs text-gray-500">Fields</p>
                       <p className="mt-1 text-lg font-bold text-white">
-                        {parsed.field_definitions?.length ?? 0}
+                        {parsed.fields?.length ?? 0}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-gray-800/50 p-3">
+                      <p className="text-xs text-gray-500">Auth Schemes</p>
+                      <p className="mt-1 text-lg font-bold text-white">
+                        {parsed.auth_requirements?.length ?? 0}
                       </p>
                     </div>
                   </div>
-                  {parsed.base_urls && parsed.base_urls.length > 0 && (
+                  {parsed.services_identified && parsed.services_identified.length > 0 && (
                     <div>
-                      <p className="text-xs font-medium text-gray-500 mb-2">Base URLs</p>
-                      <div className="space-y-1">
-                        {parsed.base_urls.map((url) => (
-                          <code
-                            key={url}
-                            className="block rounded bg-gray-800 px-3 py-1.5 text-xs text-indigo-300"
-                          >
-                            {url}
-                          </code>
+                      <p className="text-xs font-medium text-gray-500 mb-2">Services Identified</p>
+                      <div className="flex flex-wrap gap-2">
+                        {parsed.services_identified.map((s) => (
+                          <span key={s} className="rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">
+                            {s}
+                          </span>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {parsed.sections?.base_urls && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 mb-2">Base URLs</p>
+                      <code className="block rounded bg-gray-800 px-3 py-1.5 text-xs text-indigo-300">
+                        {parsed.sections.base_urls}
+                      </code>
                     </div>
                   )}
                   {parsed.parse_errors && parsed.parse_errors.length > 0 && (
@@ -336,7 +345,7 @@ function DetailModal({
                   <p className="text-sm text-gray-500 text-center py-8">No endpoints extracted.</p>
                 )
               ) : activeTab === "fields" ? (
-                parsed.field_definitions && parsed.field_definitions.length > 0 ? (
+                parsed.fields && parsed.fields.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
@@ -344,22 +353,24 @@ function DetailModal({
                           <th className="pb-2 text-left font-medium text-gray-500">Name</th>
                           <th className="pb-2 text-left font-medium text-gray-500">Type</th>
                           <th className="pb-2 text-left font-medium text-gray-500">Required</th>
+                          <th className="pb-2 text-left font-medium text-gray-500">Source</th>
                           <th className="pb-2 text-left font-medium text-gray-500">Description</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-800/60">
-                        {parsed.field_definitions.map((f, i) => (
+                        {parsed.fields.map((f, i) => (
                           // biome-ignore lint/suspicious/noArrayIndexKey: field list lacks stable id
                           <tr key={i} className="hover:bg-gray-800/30">
                             <td className="py-2 pr-3 font-mono text-gray-200">{f.name}</td>
-                            <td className="py-2 pr-3 text-gray-400">{f.field_type ?? "—"}</td>
+                            <td className="py-2 pr-3 text-indigo-400">{f.data_type ?? "—"}</td>
                             <td className="py-2 pr-3">
-                              {f.required ? (
-                                <span className="text-emerald-400">Yes</span>
+                              {f.is_required ? (
+                                <span className="text-emerald-400 font-medium">Yes</span>
                               ) : (
                                 <span className="text-gray-600">No</span>
                               )}
                             </td>
+                            <td className="py-2 pr-3 text-gray-500 text-[10px]">{f.source_section || "—"}</td>
                             <td className="py-2 text-gray-400">{f.description || "—"}</td>
                           </tr>
                         ))}
@@ -378,16 +389,18 @@ function DetailModal({
                         <div className="flex items-center gap-2 mb-2">
                           <Shield className="h-3.5 w-3.5 text-indigo-400" />
                           <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wide">
-                            {auth.scheme}
+                            {auth.auth_type}
                           </span>
                         </div>
-                        {auth.header_name && (
+                        {auth.details?.name && (
                           <p className="text-xs text-gray-400">
-                            Header: <code className="text-gray-300">{auth.header_name}</code>
+                            Name: <code className="text-gray-300">{auth.details.name}</code>
                           </p>
                         )}
-                        {auth.description && (
-                          <p className="mt-1 text-xs text-gray-400">{auth.description}</p>
+                        {auth.details?.in && (
+                          <p className="text-xs text-gray-400">
+                            Location: <code className="text-gray-300">{auth.details.in}</code>
+                          </p>
                         )}
                       </div>
                     ))}
