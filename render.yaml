@@ -8,7 +8,7 @@ services:
         value: 8000
       - key: DATABASE_URL
         value: sqlite+aiosqlite:///./data/finspark.db
-    healthCheckPath: /health
+    healthCheckPath: /api/v1/health
     disk:
       name: finspark-data
       mountPath: /app/data

@@ -8,11 +8,12 @@ services:
     volumes:
       - uploads:/app/uploads
       - db-data:/app/data
+    env_file: .env
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/finspark.db
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/docs')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -26,7 +27,7 @@ services:
       - "3000:80"
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

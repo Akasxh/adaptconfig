@@ -69,7 +69,7 @@ jobs:
       - name: Start backend server
         working-directory: backend
         run: |
-          uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          uv run uvicorn finspark.main:app --host 0.0.0.0 --port 8000 &
           echo $! > /tmp/backend.pid
           # Wait for server to be ready
           timeout 30 bash -c 'until curl -sf http://localhost:8000/health; do sleep 1; done'

@@ -21,11 +21,11 @@ FROM base AS development
 RUN uv sync --frozen --extra dev
 COPY . .
 EXPOSE 8000
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uv", "run", "uvicorn", "finspark.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # ----- Production -----
 FROM base AS production
 RUN uv sync --frozen --no-dev
 COPY . .
 EXPOSE 8000
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uv", "run", "uvicorn", "finspark.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
