@@ -1,8 +1,18 @@
 """Application configuration."""
 
 from pathlib import Path
+from typing import Any
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+_INSECURE_PATTERNS = ("change-me", "insecure")
+_MIN_KEY_LENGTH = 32
+
+
+def _is_insecure(value: str) -> bool:
+    lower = value.lower()
+    return any(pat in lower for pat in _INSECURE_PATTERNS)
 
 
 class Settings(BaseSettings):
@@ -29,6 +39,24 @@ class Settings(BaseSettings):
     ai_enabled: bool = False
 
     model_config = {"env_prefix": "FINSPARK_", "env_file": ".env"}
+
+    @model_validator(mode="after")
+    def validate_keys_in_production(self) -> "Settings":
+        if self.debug:
+            return self
+        for field_name in ("secret_key", "encryption_key"):
+            value: str = getattr(self, field_name)
+            if _is_insecure(value):
+                raise ValueError(
+                    f"{field_name} contains an insecure default value; "
+                    "set a strong secret before disabling debug mode."
+                )
+            if len(value) < _MIN_KEY_LENGTH:
+                raise ValueError(
+                    f"{field_name} must be at least {_MIN_KEY_LENGTH} characters "
+                    "when debug is False."
+                )
+        return self
 
 
 settings = Settings()
