@@ -1,9 +1,8 @@
 """Application configuration."""
 
 from pathlib import Path
-from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 _INSECURE_PATTERNS = ("change-me", "insecure")
@@ -38,7 +37,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     ai_enabled: bool = False
 
-    model_config = {"env_prefix": "FINSPARK_", "env_file": ".env"}
+    model_config = {"env_prefix": "FINSPARK_", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")
     def validate_keys_in_production(self) -> "Settings":
