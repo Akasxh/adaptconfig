@@ -23,7 +23,7 @@ from finspark.core.database import get_db
 from finspark.models.adapter import AdapterVersion
 from finspark.models.configuration import Configuration, ConfigurationHistory
 from finspark.models.document import Document
-from finspark.schemas.common import APIResponse, TenantContext
+from finspark.schemas.common import APIResponse, ConfigStatus, TenantContext
 from finspark.schemas.configurations import (
     BatchConfigRequest,
     BatchSimulationItem,
