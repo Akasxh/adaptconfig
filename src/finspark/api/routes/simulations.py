@@ -1,5 +1,6 @@
 """Simulation and testing routes."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 
@@ -165,12 +166,23 @@ async def stream_simulation(
     simulator: IntegrationSimulator = Depends(get_simulator),
 ) -> StreamingResponse:
     """Stream simulation step results as Server-Sent Events."""
-    stmt = select(Configuration).where(
-        Configuration.id == simulation_id,
+    # Look up the Simulation record first
+    sim_stmt = select(Simulation).where(
+        Simulation.id == simulation_id,
+        Simulation.tenant_id == tenant.tenant_id,
+    )
+    sim_result = await db.execute(sim_stmt)
+    simulation = sim_result.scalar_one_or_none()
+    if not simulation:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    # Fetch the Configuration via the simulation's configuration_id
+    cfg_stmt = select(Configuration).where(
+        Configuration.id == simulation.configuration_id,
         Configuration.tenant_id == tenant.tenant_id,
     )
-    result = await db.execute(stmt)
-    config = result.scalar_one_or_none()
+    cfg_result = await db.execute(cfg_stmt)
+    config = cfg_result.scalar_one_or_none()
     if not config or not config.full_config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
@@ -178,11 +190,19 @@ async def stream_simulation(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         step_index = 0
-        for step in simulator.run_simulation_stream(full_config):
-            data = json.dumps(step.model_dump())
-            yield f"event: step\ndata: {data}\n\n"
-            step_index += 1
-        yield f'event: done\ndata: {{"total_steps": {step_index}}}\n\n'
+        try:
+            # run_simulation_stream is a sync generator; run it off the event loop thread
+            steps = await asyncio.to_thread(
+                lambda: list(simulator.run_simulation_stream(full_config))
+            )
+            for step in steps:
+                data = json.dumps(step.model_dump())
+                yield f"event: step\ndata: {data}\n\n"
+                step_index += 1
+            yield f'event: done\ndata: {{"total_steps": {step_index}}}\n\n'
+        except Exception as exc:
+            error_data = json.dumps({"message": str(exc), "steps_completed": step_index})
+            yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(
         event_generator(),

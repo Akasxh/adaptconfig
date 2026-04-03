@@ -222,18 +222,27 @@ class TestSimulationRoutes:
     async def test_stream_simulation_returns_sse_content_type(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """GET /simulations/{id}/stream returns text/event-stream content type."""
+        """GET /simulations/{id}/stream returns text/event-stream after Simulation lookup."""
         _, version = await _create_adapter(db_session)
         config = await _create_configuration(db_session, version.id)
 
-        # The stream endpoint looks up Configuration by simulation_id parameter
-        response = await client.get(f"/api/v1/simulations/{config.id}/stream")
+        # Create a Simulation record linked to the configuration
+        simulation = Simulation(
+            tenant_id="test-tenant",
+            configuration_id=config.id,
+            status="passed",
+            test_type="smoke",
+        )
+        db_session.add(simulation)
+        await db_session.flush()
+
+        response = await client.get(f"/api/v1/simulations/{simulation.id}/stream")
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
 
     @pytest.mark.asyncio
     async def test_stream_simulation_invalid_id(self, client: AsyncClient) -> None:
-        """GET /simulations/{id}/stream with non-existent id returns 404."""
+        """GET /simulations/{id}/stream with non-existent simulation id returns 404."""
         response = await client.get("/api/v1/simulations/nonexistent-id/stream")
         assert response.status_code == 404
 
