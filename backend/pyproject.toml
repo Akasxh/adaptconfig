@@ -109,6 +109,7 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = [
     "--strict-markers",
     "--tb=short",

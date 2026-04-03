@@ -2,8 +2,16 @@
 
 from typing import Literal
 
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import AnyHttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INSECURE_PATTERNS = ("change-me", "insecure")
+_MIN_KEY_LENGTH = 32
+
+
+def _is_insecure(value: str) -> bool:
+    lower = value.lower()
+    return any(pat in lower for pat in _INSECURE_PATTERNS)
 
 
 class Settings(BaseSettings):
@@ -15,8 +23,8 @@ class Settings(BaseSettings):
     )
 
     # Application
-    APP_ENV: Literal["development", "staging", "production"] = "development"
-    APP_DEBUG: bool = True
+    APP_ENV: Literal["development", "staging", "production"] = "production"
+    APP_DEBUG: bool = False
     APP_SECRET_KEY: str = "insecure-default-change-in-production"
     APP_ALLOWED_HOSTS: list[str] = ["*"]
 
@@ -43,6 +51,22 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "json"
+
+    @model_validator(mode="after")
+    def validate_secret_key_in_production(self) -> "Settings":
+        if self.APP_ENV == "development":
+            return self
+        if _is_insecure(self.APP_SECRET_KEY):
+            raise ValueError(
+                "APP_SECRET_KEY contains an insecure default value; "
+                "set a strong secret when APP_ENV is not 'development'."
+            )
+        if len(self.APP_SECRET_KEY) < _MIN_KEY_LENGTH:
+            raise ValueError(
+                f"APP_SECRET_KEY must be at least {_MIN_KEY_LENGTH} characters "
+                "when APP_ENV is not 'development'."
+            )
+        return self
 
     @field_validator("APP_ALLOWED_HOSTS", mode="before")
     @classmethod
