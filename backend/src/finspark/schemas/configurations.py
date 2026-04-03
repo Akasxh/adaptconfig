@@ -18,8 +18,13 @@ from finspark.schemas.common import PaginatedResponse
 
 class ConfigStatus(str, Enum):
     DRAFT = "draft"
+    CONFIGURED = "configured"
+    VALIDATING = "validating"
+    TESTING = "testing"
     VALIDATED = "validated"
+    ACTIVE = "active"
     DEPLOYED = "deployed"
+    DEPRECATED = "deprecated"
     FAILED = "failed"
     ARCHIVED = "archived"
 
@@ -139,3 +144,16 @@ class ConfigRecord(BaseModel):
 
 
 ConfigListResponse = PaginatedResponse[ConfigRecord]
+
+
+# ---------------------------------------------------------------------------
+# Transition
+# ---------------------------------------------------------------------------
+
+
+class ConfigTransitionRequest(BaseModel):
+    target_status: ConfigStatus
+    simulation_results: dict[str, Any] | None = Field(
+        default=None,
+        description="Required when transitioning testing → active.",
+    )

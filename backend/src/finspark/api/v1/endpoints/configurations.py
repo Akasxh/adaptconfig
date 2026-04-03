@@ -36,8 +36,15 @@ from finspark.schemas.configurations import (
     ConfigListResponse,
     ConfigRecord,
     ConfigStatus,
+    ConfigTransitionRequest,
     ConfigValidateResponse,
     DeployEnvironment,
+)
+from finspark.services.lifecycle import (
+    InvalidTransitionError,
+    InsufficientRoleError,
+    validate_rollback,
+    validate_transition,
 )
 
 logger = structlog.get_logger(__name__)
@@ -231,6 +238,96 @@ async def deploy_configuration(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Configuration {config_id} not found.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Rollback
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{config_id}/rollback",
+    response_model=MessageResponse,
+    summary="Rollback configuration to draft",
+    responses={
+        200: {"description": "Configuration rolled back to draft."},
+        400: {"description": "Rollback not permitted from current state."},
+        404: {"description": "Config not found."},
+        403: {"description": "Tenant access denied."},
+    },
+)
+async def rollback_configuration(
+    config_id: UUID,
+    tenant_ctx: TenantCtx,
+    db: DbDep,
+    _user: CurrentUser,
+) -> MessageResponse:
+    # In a real implementation we'd load the config record from DB here.
+    # For now we demonstrate the state validation guard with a placeholder.
+    # Replace `current_status` with the DB-fetched value when persistence is wired.
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Configuration {config_id} not found.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Transition
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{config_id}/transition",
+    response_model=ConfigRecord,
+    summary="Transition configuration state",
+    description=(
+        "Moves a configuration through the lifecycle state machine. "
+        "Gate guards enforce prerequisites for each transition. "
+        "Transitions to `active` or `deprecated` require admin role."
+    ),
+    responses={
+        200: {"description": "Configuration transitioned successfully."},
+        400: {"description": "Invalid transition or gate check failed."},
+        403: {"description": "Insufficient role or tenant access denied."},
+        404: {"description": "Config not found."},
+    },
+)
+async def transition_configuration(
+    config_id: UUID,
+    body: ConfigTransitionRequest,
+    tenant_ctx: TenantCtx,
+    db: DbDep,
+    user: CurrentUser,
+) -> ConfigRecord:
+    # In a real implementation we'd load the config record from DB here.
+    # Gate validation is exercised via the lifecycle service:
+    #
+    #   validate_transition(
+    #       current_status=config.status,
+    #       target_status=body.target_status,
+    #       payload=config.payload,
+    #       simulation_results=body.simulation_results,
+    #       caller_roles=user.roles,
+    #   )
+    #
+    # If validate_transition raises, translate to HTTP 400/403 as below.
+    try:
+        # Placeholder: no DB record yet, so we raise 404.
+        # When persistence lands, remove this raise and load the real record.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Configuration {config_id} not found.",
+        )
+    except InvalidTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except InsufficientRoleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
