@@ -482,6 +482,9 @@ export default function Documents() {
       "application/json": [".json"],
       "application/xml": [".xml"],
       "text/csv": [".csv"],
+      "application/x-yaml": [".yaml", ".yml"],
+      "text/yaml": [".yaml", ".yml"],
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
     },
   });
@@ -540,7 +543,7 @@ export default function Documents() {
                   : "Drag & drop files, or click to browse"}
             </p>
             <p className="mt-1 text-xs text-gray-500">
-              PDF, JSON, XML, CSV, XLSX supported &middot; max 50 MB
+              PDF, DOCX, YAML, JSON, XML, CSV, XLSX &middot; max 50 MB
             </p>
           </div>
         </div>

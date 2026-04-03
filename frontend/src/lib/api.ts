@@ -50,10 +50,12 @@ export const documentsApi = {
   get: (id: string) =>
     api.get<APIResponse<Document>>(`/api/v1/documents/${id}`).then((r) => r.data),
   upload: (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const docType = ["yaml", "yml", "json"].includes(ext) ? "api_spec" : "brd";
     const form = new FormData();
     form.append("file", file);
     return api
-      .post<APIResponse<Document>>("/api/v1/documents/upload?doc_type=brd", form, {
+      .post<APIResponse<Document>>(`/api/v1/documents/upload?doc_type=${docType}`, form, {
         headers: { "Content-Type": "multipart/form-data" },
       })
       .then((r) => r.data);
