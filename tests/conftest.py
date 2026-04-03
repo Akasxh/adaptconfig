@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -33,6 +34,17 @@ def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def enable_debug_mode_for_tests():
+    """Enable debug mode for all tests so header-based tenant auth is active.
+
+    Production JWT enforcement is tested explicitly in test_auth_middleware.py.
+    """
+    with patch("finspark.core.middleware.settings") as mock_settings:
+        mock_settings.debug = True
+        yield mock_settings
 
 
 @pytest_asyncio.fixture(autouse=True)
