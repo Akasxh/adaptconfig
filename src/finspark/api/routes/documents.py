@@ -137,6 +137,47 @@ async def get_document(
     )
 
 
+@router.delete("/{document_id}", response_model=APIResponse[dict])
+async def delete_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+    audit: AuditService = Depends(get_audit_service),
+) -> APIResponse[dict]:
+    """Delete a document and its uploaded file."""
+    stmt = select(Document).where(
+        Document.id == document_id,
+        Document.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    filename = doc.filename
+    file_path = settings.upload_dir / tenant.tenant_id / filename
+    if file_path.exists():
+        file_path.unlink()
+
+    await db.delete(doc)
+    await db.flush()
+
+    await audit.log(
+        tenant_id=tenant.tenant_id,
+        actor=tenant.tenant_name,
+        action="delete_document",
+        resource_type="document",
+        resource_id=document_id,
+        details={"filename": filename},
+    )
+
+    return APIResponse(
+        data={"id": document_id, "deleted": True},
+        message=f"Document '{filename}' deleted",
+    )
+
+
 @router.get("/", response_model=APIResponse[list[DocumentUploadResponse]])
 async def list_documents(
     db: AsyncSession = Depends(get_db),

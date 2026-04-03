@@ -1,0 +1,292 @@
+openapi: "3.0.3"
+info:
+  title: CIBIL Credit Bureau API
+  version: "2.0.0"
+  description: |
+    TransUnion CIBIL credit score and report API for lending platforms.
+    Used for credit assessment during customer onboarding.
+
+    SLA: 3 second timeout, 3 retries with exponential backoff.
+    All PAN numbers must be masked in logs.
+
+servers:
+  - url: https://api.cibil.com/v2
+    description: Production
+
+security:
+  - OAuth2:
+      - credit:read
+      - credit:report
+
+paths:
+  /scores:
+    post:
+      operationId: getCreditScore
+      summary: Fetch credit score for a customer
+      description: |
+        Returns CIBIL score (300-900) for the given PAN.
+        Requires valid consent_id from the consent service.
+        Timeout: 3000ms, Retries: 3 with exponential backoff.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pan_number
+                - applicant_name
+                - dob
+                - consent_id
+              properties:
+                pan_number:
+                  type: string
+                  pattern: "^[A-Z]{5}[0-9]{4}[A-Z]$"
+                  description: PAN card number (10 chars)
+                  example: ABCDE1234F
+                applicant_name:
+                  type: string
+                  description: Full name as on PAN card
+                  example: Akash Kumar
+                dob:
+                  type: string
+                  format: date
+                  description: Date of birth (YYYY-MM-DD)
+                  example: "1995-08-15"
+                phone:
+                  type: string
+                  description: Mobile number (10 digits)
+                  example: "9876543210"
+                email:
+                  type: string
+                  format: email
+                  description: Email address
+                  example: akash@example.com
+                residential_address:
+                  type: string
+                  description: Full residential address
+                product_type:
+                  type: string
+                  enum: [personal_loan, home_loan, credit_card, auto_loan, business_loan]
+                  description: Type of credit product being applied for
+                requested_amount:
+                  type: number
+                  description: Loan amount requested in INR
+                  example: 500000
+                consent_id:
+                  type: string
+                  description: Consent verification ID from consent service
+                  example: CONSENT-2026-001
+      responses:
+        "200":
+          description: Credit score retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  score:
+                    type: integer
+                    minimum: 300
+                    maximum: 900
+                    description: CIBIL credit score
+                    example: 750
+                  score_range:
+                    type: string
+                    enum: [poor, fair, good, very_good, excellent]
+                    example: good
+                  enquiry_id:
+                    type: string
+                    description: Unique enquiry reference
+                    example: ENQ-2026-00142
+                  report_id:
+                    type: string
+                    description: Full report reference (use with /reports endpoint)
+                    example: RPT-2026-00089
+                  active_accounts:
+                    type: integer
+                    description: Number of active credit accounts
+                    example: 3
+                  overdue_accounts:
+                    type: integer
+                    description: Number of accounts with overdue payments
+                    example: 0
+                  total_outstanding:
+                    type: number
+                    description: Total outstanding balance in INR
+                    example: 245000
+        "400":
+          description: Invalid request (bad PAN format, missing fields)
+        "401":
+          description: Invalid or expired OAuth2 token
+        "429":
+          description: Rate limit exceeded (max 100 req/min)
+        "503":
+          description: Bureau service temporarily unavailable
+
+  /reports:
+    post:
+      operationId: getCreditReport
+      summary: Fetch detailed credit report
+      description: |
+        Returns full credit report including account details,
+        payment history, and enquiry history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pan_number
+                - report_type
+                - consent_id
+              properties:
+                pan_number:
+                  type: string
+                  pattern: "^[A-Z]{5}[0-9]{4}[A-Z]$"
+                report_type:
+                  type: string
+                  enum: [summary, detailed, comprehensive]
+                  default: summary
+                consent_id:
+                  type: string
+      responses:
+        "200":
+          description: Credit report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_id:
+                    type: string
+                  report_type:
+                    type: string
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        account_type:
+                          type: string
+                        lender_name:
+                          type: string
+                        outstanding_amount:
+                          type: number
+                        payment_status:
+                          type: string
+                  enquiry_history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        purpose:
+                          type: string
+                        lender:
+                          type: string
+
+  /batch/inquiries:
+    post:
+      operationId: batchCreditInquiry
+      summary: Submit batch credit inquiries
+      description: Process multiple credit checks in a single request (max 50)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - inquiries
+              properties:
+                inquiries:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required:
+                      - pan_number
+                      - applicant_name
+                    properties:
+                      pan_number:
+                        type: string
+                      applicant_name:
+                        type: string
+                      reference_id:
+                        type: string
+                        description: Your internal reference for correlation
+      responses:
+        "202":
+          description: Batch accepted for processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                  total_inquiries:
+                    type: integer
+                  estimated_completion_seconds:
+                    type: integer
+
+  /consent/verify:
+    post:
+      operationId: verifyConsent
+      summary: Verify customer consent for credit check
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - customer_id
+                - purpose
+              properties:
+                customer_id:
+                  type: string
+                  description: Internal customer identifier
+                purpose:
+                  type: string
+                  enum: [credit_check, monitoring, dispute_resolution]
+                validity_days:
+                  type: integer
+                  default: 180
+                  description: Consent validity period in days
+      responses:
+        "200":
+          description: Consent verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consent_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [active, expired, revoked]
+                  valid_until:
+                    type: string
+                    format: date-time
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.cibil.com/oauth2/token
+          scopes:
+            credit:read: Read credit scores
+            credit:report: Access full credit reports
+            credit:batch: Submit batch inquiries
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
