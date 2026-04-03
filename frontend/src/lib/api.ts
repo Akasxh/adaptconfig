@@ -47,6 +47,8 @@ export const adaptersApi = {
 
 export const documentsApi = {
   list: () => api.get<APIResponse<Document[]>>("/api/v1/documents/").then((r) => r.data),
+  get: (id: string) =>
+    api.get<APIResponse<Document>>(`/api/v1/documents/${id}`).then((r) => r.data),
   upload: (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -56,6 +58,8 @@ export const documentsApi = {
       })
       .then((r) => r.data);
   },
+  delete: (id: string) =>
+    api.delete<APIResponse<{ message: string }>>(`/api/v1/documents/${id}`).then((r) => r.data),
 };
 
 export const configurationsApi = {
@@ -74,6 +78,13 @@ export const configurationsApi = {
   validate: (id: string) =>
     api
       .post<APIResponse<ConfigValidationResult>>(`/api/v1/configurations/${id}/validate`)
+      .then((r) => r.data),
+  transition: (id: string, targetState: string, reason?: string) =>
+    api
+      .post<APIResponse<Configuration>>(`/api/v1/configurations/${id}/transition`, {
+        target_state: targetState,
+        reason,
+      })
       .then((r) => r.data),
   getTemplates: () =>
     api

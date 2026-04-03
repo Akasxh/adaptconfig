@@ -1,8 +1,17 @@
 import { adaptersApi } from "@/lib/api";
-import type { Adapter } from "@/types";
+import type { Adapter, AdapterVersion } from "@/types";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { Clock, Plug, RefreshCw } from "lucide-react";
+import { ChevronDown, Clock, Link2, Plug, RefreshCw, Shield, X } from "lucide-react";
+import { useState } from "react";
+
+function methodBadgeCls(method: string): string {
+  if (method === "GET") return "bg-emerald-500/15 text-emerald-400";
+  if (method === "POST") return "bg-blue-500/15 text-blue-400";
+  if (method === "PUT" || method === "PATCH") return "bg-amber-500/15 text-amber-400";
+  if (method === "DELETE") return "bg-red-500/15 text-red-400";
+  return "bg-gray-500/15 text-gray-400";
+}
 
 const categoryColors: Record<string, string> = {
   bureau: "text-blue-400 bg-blue-500/10",
@@ -49,11 +58,157 @@ function SkeletonCard() {
   );
 }
 
+function VersionPanel({ version }: { version: AdapterVersion }) {
+  const [open, setOpen] = useState(false);
+  const statusCls = version.status === "active" ? "badge-green" : "badge-gray";
+
+  return (
+    <div className="border border-gray-800 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-gray-800/30 transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="text-sm font-mono font-medium text-gray-200">v{version.version}</span>
+        <span className={statusCls}>{version.status}</span>
+        {version.auth_type && (
+          <span className="flex items-center gap-1 text-xs text-gray-500 ml-1">
+            <Shield className="h-3 w-3" />
+            {version.auth_type}
+          </span>
+        )}
+        {version.base_url && (
+          <code className="ml-auto text-xs text-indigo-400 truncate max-w-[180px]">
+            {version.base_url}
+          </code>
+        )}
+        <ChevronDown
+          className={clsx(
+            "h-3.5 w-3.5 text-gray-600 shrink-0 transition-transform",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      {open && version.endpoints.length > 0 && (
+        <div className="border-t border-gray-800 bg-gray-900/40 px-4 py-3">
+          <p className="text-xs font-medium text-gray-500 mb-2">
+            Endpoints ({version.endpoints.length})
+          </p>
+          <div className="space-y-1.5">
+            {version.endpoints.map((ep, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: endpoints lack stable id
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <span
+                  className={clsx(
+                    "inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase shrink-0",
+                    methodBadgeCls(ep.method)
+                  )}
+                >
+                  {ep.method}
+                </span>
+                <code className="font-mono text-gray-300">{ep.path}</code>
+                {ep.description && <span className="text-gray-500 truncate">{ep.description}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {open && version.endpoints.length === 0 && (
+        <div className="border-t border-gray-800 bg-gray-900/40 px-4 py-3">
+          <p className="text-xs text-gray-600">No endpoints defined for this version.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdapterModal({
+  adapter,
+  onClose,
+}: {
+  adapter: Adapter;
+  onClose: () => void;
+}) {
+  const categoryColor = categoryColors[adapter.category] ?? "text-gray-400 bg-gray-500/10";
+
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: modal overlay, keyboard handled via close button
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="relative z-10 w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-gray-800 bg-gray-950 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center gap-3 border-b border-gray-800 px-6 py-4">
+          <div className={clsx("rounded-lg p-2", categoryColor)}>
+            <Plug className="h-4 w-4" />
+          </div>
+          <div className="flex-1">
+            <h2 className="font-semibold text-white">{adapter.name}</h2>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span
+                className={clsx(
+                  "inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                  categoryColor
+                )}
+              >
+                {adapter.category.replaceAll("_", " ")}
+              </span>
+              <span className={adapter.is_active ? "badge-green" : "badge-gray"}>
+                {adapter.is_active ? "Active" : "Inactive"}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-300 transition-colors"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto p-6 space-y-5">
+          {adapter.description && (
+            <p className="text-sm text-gray-400 leading-relaxed">{adapter.description}</p>
+          )}
+
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+              <Link2 className="h-3.5 w-3.5" />
+              Versions ({adapter.versions.length})
+            </h3>
+            {adapter.versions.length > 0 ? (
+              <div className="space-y-2">
+                {adapter.versions.map((v) => (
+                  <VersionPanel key={v.id} version={v} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600">No versions available.</p>
+            )}
+          </div>
+
+          <div className="text-xs text-gray-600 border-t border-gray-800 pt-3">
+            Added {formatTimeAgo(adapter.created_at)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Adapters() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["adapters"],
     queryFn: () => adaptersApi.list(),
   });
+  const [selectedAdapter, setSelectedAdapter] = useState<Adapter | null>(null);
 
   const adapters: Adapter[] = isLoading ? [] : (data?.data?.adapters ?? []);
 
@@ -114,7 +269,12 @@ export default function Adapters() {
             const latestVersion = adapter.versions[adapter.versions.length - 1]?.version;
 
             return (
-              <div key={adapter.id} className="card-hover group p-5">
+              <button
+                key={adapter.id}
+                type="button"
+                className="card-hover group p-5 text-left w-full cursor-pointer"
+                onClick={() => setSelectedAdapter(adapter)}
+              >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className={clsx("rounded-lg p-2", categoryColor)}>
@@ -147,10 +307,14 @@ export default function Adapters() {
                   </div>
                   {latestVersion && <span className="text-xs text-gray-500">v{latestVersion}</span>}
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
+      )}
+
+      {selectedAdapter && (
+        <AdapterModal adapter={selectedAdapter} onClose={() => setSelectedAdapter(null)} />
       )}
     </div>
   );
