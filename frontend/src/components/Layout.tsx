@@ -1,17 +1,19 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { healthApi } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import clsx from "clsx";
 import {
-  LayoutDashboard,
-  Plug,
   FileText,
-  Settings,
   FlaskConical,
-  Shield,
-  Zap,
+  LayoutDashboard,
   Menu,
+  Plug,
+  Settings,
+  Shield,
   X,
+  Zap,
 } from "lucide-react";
 import { useState } from "react";
-import clsx from "clsx";
+import { NavLink, Outlet } from "react-router-dom";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
@@ -24,6 +26,13 @@ const navItems = [
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: healthApi.check,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const isConnected = health.isSuccess;
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -45,7 +54,7 @@ export default function Layout() {
       <aside
         className={clsx(
           "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-gray-800 bg-gray-950 transition-transform duration-200 lg:static lg:translate-x-0",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
         {/* Logo */}
@@ -53,14 +62,8 @@ export default function Layout() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600">
             <Zap className="h-4 w-4 text-white" />
           </div>
-          <span className="text-lg font-bold tracking-tight text-white">
-            FinSpark
-          </span>
-          <button
-            type="button"
-            className="ml-auto lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-          >
+          <span className="text-lg font-bold tracking-tight text-white">FinSpark</span>
+          <button type="button" className="ml-auto lg:hidden" onClick={() => setSidebarOpen(false)}>
             <X className="h-5 w-5 text-gray-400" />
           </button>
         </div>
@@ -78,7 +81,7 @@ export default function Layout() {
                   "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
                     ? "bg-indigo-600/10 text-indigo-400"
-                    : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200",
+                    : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
                 )
               }
             >
@@ -99,17 +102,20 @@ export default function Layout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}
         <header className="flex h-16 shrink-0 items-center gap-4 border-b border-gray-800 bg-gray-950/80 px-6 backdrop-blur-sm">
-          <button
-            type="button"
-            className="lg:hidden"
-            onClick={() => setSidebarOpen(true)}
-          >
+          <button type="button" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
             <Menu className="h-5 w-5 text-gray-400" />
           </button>
           <div className="flex-1" />
           <div className="flex items-center gap-3">
-            <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-xs text-gray-400">System Healthy</span>
+            <div
+              className={clsx(
+                "h-2 w-2 rounded-full",
+                isConnected ? "bg-emerald-500 animate-pulse" : "bg-red-500"
+              )}
+            />
+            <span className="text-xs text-gray-400">
+              {isConnected ? "Backend Connected" : "Backend Offline"}
+            </span>
           </div>
         </header>
 
