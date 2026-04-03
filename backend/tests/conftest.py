@@ -442,9 +442,27 @@ def mock_llm_response() -> dict[str, Any]:
 
 
 @pytest.fixture()
+def mock_gemini(mock_llm_response: dict[str, Any]):
+    """
+    Patches GeminiClient methods. Yields the mock client for assertion in tests.
+    """
+    mock_client = AsyncMock()
+    mock_client.generate = AsyncMock(return_value=json.dumps(mock_llm_response))
+    mock_client.generate_json = AsyncMock(return_value=mock_llm_response)
+    mock_client.api_key = "test-key"
+    mock_client.model = "gemini-2.5-flash"
+
+    with patch(
+        "finspark.services.llm.client.get_llm_client",
+        return_value=mock_client,
+    ):
+        yield mock_client
+
+
+@pytest.fixture()
 def mock_openai(mock_llm_response: dict[str, Any]):
     """
-    Patches openai.AsyncOpenAI. Yields the mock client for assertion in tests.
+    Legacy: patches openai.AsyncOpenAI. Yields the mock client for assertion in tests.
     """
     completion = MagicMock()
     completion.choices = [
