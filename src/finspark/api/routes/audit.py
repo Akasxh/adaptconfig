@@ -1,6 +1,7 @@
 """Audit log routes."""
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -11,6 +12,8 @@ from finspark.core.database import get_db
 from finspark.models.audit import AuditLog
 from finspark.schemas.audit import AuditLogResponse
 from finspark.schemas.common import APIResponse, PaginatedResponse, TenantContext
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/audit", tags=["Audit"])
 
@@ -26,31 +29,40 @@ async def query_audit_logs(
     tenant: TenantContext = Depends(get_tenant_context),
 ) -> APIResponse[PaginatedResponse[AuditLogResponse]]:
     """Query audit logs for the current tenant."""
-    stmt = select(AuditLog).where(AuditLog.tenant_id == tenant.tenant_id)
+    filters = [AuditLog.tenant_id == tenant.tenant_id]
 
     if resource_type:
-        stmt = stmt.where(AuditLog.resource_type == resource_type)
+        filters.append(AuditLog.resource_type == resource_type)
     if resource_id:
-        stmt = stmt.where(AuditLog.resource_id == resource_id)
+        filters.append(AuditLog.resource_id == resource_id)
     if action:
-        stmt = stmt.where(AuditLog.action == action)
+        filters.append(AuditLog.action == action)
 
-    stmt = stmt.order_by(AuditLog.created_at.desc())
-
-    # Count
-    count_result = await db.execute(
-        select(AuditLog.id).where(AuditLog.tenant_id == tenant.tenant_id)
-    )
+    # Count applies all active filters so pagination metadata is accurate
+    count_result = await db.execute(select(AuditLog.id).where(*filters))
     total = len(count_result.all())
 
-    # Paginate
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    # Paginated data uses the same filters
+    stmt = (
+        select(AuditLog)
+        .where(*filters)
+        .order_by(AuditLog.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(stmt)
     logs = result.scalars().all()
 
     items = []
     for log in logs:
-        details = json.loads(log.details) if log.details else None
+        if log.details:
+            try:
+                details = json.loads(log.details)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Malformed JSON in audit log %s details; returning None", log.id)
+                details = None
+        else:
+            details = None
         items.append(
             AuditLogResponse(
                 id=log.id,
