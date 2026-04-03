@@ -67,7 +67,14 @@ def _make_app(*middlewares: Any, path: str = "/") -> Starlette:
 
 
 class TestTenantMiddleware:
-    """Tests for TenantMiddleware – header extraction and propagation."""
+    """Tests for TenantMiddleware – header extraction and propagation (dev mode)."""
+
+    @pytest.fixture(autouse=True)
+    def enable_debug_mode(self) -> Any:
+        """Run TenantMiddleware tests in dev/debug mode so header auth is active."""
+        with patch("finspark.core.middleware.settings") as mock_settings:
+            mock_settings.debug = True
+            yield mock_settings
 
     def test_tenant_header_extracted(self) -> None:
         app = _make_app(TenantMiddleware)
@@ -113,11 +120,11 @@ class TestTenantMiddleware:
         resp = client.get("/")
         assert DEFAULT_TENANT_NAME in resp.text
 
-    def test_missing_role_uses_admin_default(self) -> None:
+    def test_missing_role_uses_viewer_default(self) -> None:
         app = _make_app(TenantMiddleware)
         client = TestClient(app)
         resp = client.get("/", headers={"X-Tenant-ID": "t1"})
-        assert "admin" in resp.text
+        assert "viewer" in resp.text
 
     def test_response_echoes_tenant_id_header(self) -> None:
         app = _make_app(TenantMiddleware)
@@ -155,6 +162,13 @@ class TestTenantMiddleware:
 
 class TestRequestLoggingMiddleware:
     """Tests for RequestLoggingMiddleware – timing and structured logging."""
+
+    @pytest.fixture(autouse=True)
+    def enable_debug_mode(self) -> Any:
+        """Run with debug=True so TenantMiddleware stacking tests use header auth."""
+        with patch("finspark.core.middleware.settings") as mock_settings:
+            mock_settings.debug = True
+            yield mock_settings
 
     def test_response_time_header_present(self) -> None:
         app = _make_app(RequestLoggingMiddleware)

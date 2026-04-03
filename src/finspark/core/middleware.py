@@ -6,24 +6,76 @@ import logging
 import re
 import time
 
+import jwt
 from fastapi import Request
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
+
+from finspark.core.config import settings
+from finspark.core.security import decode_jwt_token
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TENANT_ID = "default"
 DEFAULT_TENANT_NAME = "Default Tenant"
 
+# Paths that bypass authentication entirely
+_AUTH_BYPASS_PATHS: frozenset[str] = frozenset(
+    ["/health", "/docs", "/redoc", "/openapi.json", "/metrics"]
+)
+
 
 class TenantMiddleware(BaseHTTPMiddleware):
-    """Extracts tenant context from request headers and injects into request state."""
+    """Extracts tenant context from request headers/JWT and injects into request state.
+
+    Production mode (settings.debug=False):
+        Requires a valid JWT Bearer token in the Authorization header.
+        Extracts tenant_id, tenant_name, and role from the verified token payload.
+        Returns 401 for missing or invalid tokens.
+
+    Development mode (settings.debug=True):
+        Falls back to X-Tenant-* headers for convenience.
+        Default role is "viewer" (not "admin") to avoid accidental privilege escalation.
+
+    Auth is always skipped for: /health, /docs, /redoc, /openapi.json, /metrics
+    """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        tenant_id = request.headers.get("X-Tenant-ID", DEFAULT_TENANT_ID)
-        tenant_name = request.headers.get("X-Tenant-Name", DEFAULT_TENANT_NAME)
-        role = request.headers.get("X-Tenant-Role", "admin")
+        if request.url.path in _AUTH_BYPASS_PATHS:
+            # Auth is skipped; still set tenant state and echo the header for observability
+            tenant_id = request.headers.get("X-Tenant-ID", DEFAULT_TENANT_ID)
+            request.state.tenant_id = tenant_id
+            request.state.tenant_name = request.headers.get("X-Tenant-Name", DEFAULT_TENANT_NAME)
+            request.state.role = request.headers.get("X-Tenant-Role", "viewer")
+            response = await call_next(request)
+            response.headers["X-Tenant-ID"] = tenant_id
+            return response
+
+        if settings.debug:
+            # Development mode: trust X-Tenant-* headers, safe default role
+            tenant_id = request.headers.get("X-Tenant-ID", DEFAULT_TENANT_ID)
+            tenant_name = request.headers.get("X-Tenant-Name", DEFAULT_TENANT_NAME)
+            role = request.headers.get("X-Tenant-Role", "viewer")
+        else:
+            # Production mode: require a valid JWT Bearer token
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Missing or invalid Authorization header"},
+                )
+            token = auth_header[len("Bearer "):]
+            try:
+                payload = decode_jwt_token(token)
+            except jwt.PyJWTError:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or expired token"},
+                )
+            tenant_id = payload.get("tenant_id", DEFAULT_TENANT_ID)
+            tenant_name = payload.get("tenant_name", DEFAULT_TENANT_NAME)
+            role = payload.get("role", "viewer")
 
         request.state.tenant_id = tenant_id
         request.state.tenant_name = tenant_name

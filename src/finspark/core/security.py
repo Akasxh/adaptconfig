@@ -41,9 +41,9 @@ def decrypt_value(ciphertext: str) -> str:
 
 def create_jwt_token(data: dict[str, str], expires_delta: timedelta | None = None) -> str:
     """Create a JWT token."""
-    to_encode = data.copy()
+    to_encode: dict[str, object] = dict(data)
     expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=settings.jwt_expiry_minutes))
-    to_encode["exp"] = expire.isoformat()
+    to_encode["exp"] = int(expire.timestamp())
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -72,3 +72,17 @@ def mask_pii(text: str) -> str:
 def hash_value(value: str) -> str:
     """Create a SHA-256 hash of a value."""
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def create_tenant_token(tenant_id: str, tenant_name: str, role: str) -> str:
+    """Create a JWT containing tenant identity claims.
+
+    Used by testing utilities and dev tooling to generate valid Bearer tokens
+    for the TenantMiddleware in production mode.
+    """
+    payload = {
+        "tenant_id": tenant_id,
+        "tenant_name": tenant_name,
+        "role": role,
+    }
+    return create_jwt_token(payload)
