@@ -36,7 +36,7 @@ import { useEffect, useState } from "react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const STATUS_STEPS = ["draft", "configured", "testing", "active"] as const;
+const STATUS_STEPS = ["draft", "configured", "validating", "testing", "active"] as const;
 type StatusStep = (typeof STATUS_STEPS)[number];
 
 const STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
@@ -53,7 +53,8 @@ const TRANSITION_BUTTONS: Record<
   { label: string; icon: React.ElementType; targetState: string }[]
 > = {
   draft: [{ label: "Mark Configured", icon: CheckCircle2, targetState: "configured" }],
-  configured: [{ label: "Start Testing", icon: PlayCircle, targetState: "testing" }],
+  configured: [{ label: "Start Validation", icon: PlayCircle, targetState: "validating" }],
+  validating: [{ label: "Start Testing", icon: PlayCircle, targetState: "testing" }],
   testing: [{ label: "Deploy", icon: Rocket, targetState: "active" }],
 };
 

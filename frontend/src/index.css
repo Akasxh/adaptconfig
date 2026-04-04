@@ -7,13 +7,17 @@
 
     /* Deep space background — almost black with cool violet undertone */
     --color-bg-base: #08090e;
-    --color-bg-elevated: rgba(255, 255, 255, 0.04);
-    --color-bg-raised: rgba(255, 255, 255, 0.07);
+    --color-bg-elevated: rgba(255, 255, 255, 0.06);
+    --color-bg-raised: rgba(255, 255, 255, 0.10);
 
-    /* Glass surface */
-    --color-glass: rgba(255, 255, 255, 0.05);
-    --color-glass-hover: rgba(255, 255, 255, 0.08);
-    --color-glass-strong: rgba(255, 255, 255, 0.10);
+    /* Glass surface — increased opacity for readability */
+    --color-glass: rgba(255, 255, 255, 0.07);
+    --color-glass-hover: rgba(255, 255, 255, 0.11);
+    --color-glass-strong: rgba(255, 255, 255, 0.14);
+
+    /* Solid dark surfaces for dropdowns/modals where transparency causes readability issues */
+    --color-surface-solid: #151922;
+    --color-surface-modal: #12161f;
 
     /* Borders — subtle white at low opacity */
     --color-border: rgba(255, 255, 255, 0.06);
@@ -69,6 +73,44 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+  }
+
+  /* Fix dropdown/select elements — solid dark background for readability */
+  select, select option {
+    background-color: var(--color-surface-solid) !important;
+    color: var(--color-text-primary) !important;
+  }
+
+  select {
+    border: 1px solid var(--color-border-strong);
+    border-radius: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+
+  select:focus {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 2px var(--color-brand-subtle);
+  }
+
+  /* Input fields — solid dark background */
+  input[type="text"], input[type="search"], input[type="email"],
+  input[type="password"], input[type="url"], input[type="number"], textarea {
+    background-color: var(--color-surface-solid) !important;
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
+    border-radius: 0.625rem;
+  }
+
+  input:focus, textarea:focus {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 2px var(--color-brand-subtle);
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: var(--color-text-muted);
   }
 
   /* Tabular numerals for all data */
