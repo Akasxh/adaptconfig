@@ -299,7 +299,7 @@ class TestConfigurationRoutes:
         assert body["data"]["status"] == "configured"
         assert body["data"]["adapter_version_id"] == version.id
         assert body["data"]["document_id"] == doc.id
-        assert body["message"] == "Configuration generated successfully"
+        assert "generated via" in body["message"]
 
     @pytest.mark.asyncio
     async def test_generate_configuration_missing_document(

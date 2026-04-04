@@ -56,10 +56,18 @@ async def list_webhooks(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_tenant_context),
 ) -> APIResponse[list[WebhookResponse]]:
-    """List all webhooks for the current tenant."""
+    """List active webhooks for the current tenant.
+
+    Only returns webhooks where is_active=True. Inactive (soft-deleted)
+    webhooks are excluded. Note: Webhook uses is_active as its soft-delete
+    flag — there is no separate is_deleted column on this model.
+    """
     stmt = (
         select(Webhook)
-        .where(Webhook.tenant_id == tenant.tenant_id)
+        .where(
+            Webhook.tenant_id == tenant.tenant_id,
+            Webhook.is_active == True,  # noqa: E712 — SQLAlchemy requires == not `is`
+        )
         .order_by(Webhook.created_at.desc())
     )
     result = await db.execute(stmt)

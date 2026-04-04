@@ -2,7 +2,9 @@
 
 import io
 import json
+import logging
 from collections import defaultdict
+from typing import Any
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +21,7 @@ from finspark.api.dependencies import (
     get_tenant_context,
 )
 from finspark.core.audit import AuditService
+from finspark.core.config import settings
 from finspark.core.database import get_db
 from finspark.models.adapter import AdapterVersion
 from finspark.models.configuration import Configuration, ConfigurationHistory
@@ -46,7 +49,11 @@ from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
+from finspark.services.llm.client import GeminiAPIError, GeminiClient
+from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
 
@@ -408,6 +415,53 @@ async def export_configuration(
     )
 
 
+def _augment_with_rule_based(
+    base_config: dict[str, Any],
+    parsed_result: dict[str, Any],
+    av_dict: dict[str, Any],
+    generator: ConfigGenerator,
+) -> dict[str, Any]:
+    """Run the rule-based field mapper over a config, augmenting field_mappings
+    with confidence scores and filling in any gaps.
+
+    If base_config already has field_mappings (from LLM), the rule-based mapper
+    validates them and backfills unmapped source fields. The rule-based mappings
+    serve as the authoritative confidence scores.
+    """
+    rule_config = generator.generate(parsed_result, av_dict)
+    rule_mappings: list[dict[str, Any]] = rule_config.get("field_mappings", [])
+
+    existing_mappings: list[dict[str, Any]] = base_config.get("field_mappings", [])
+    existing_targets: set[str] = {m.get("source_field", "") for m in existing_mappings}
+
+    # Index rule mappings by source field for O(1) lookup
+    rule_by_source: dict[str, dict[str, Any]] = {
+        m.get("source_field", ""): m for m in rule_mappings
+    }
+
+    # Augment existing mappings with rule-based confidence scores
+    augmented: list[dict[str, Any]] = []
+    for m in existing_mappings:
+        src = m.get("source_field", "")
+        rule_m = rule_by_source.get(src)
+        merged = dict(m)
+        if rule_m:
+            # Use rule-based confidence (more reliable than LLM self-assessment)
+            merged["confidence"] = rule_m.get("confidence", merged.get("confidence", 0.0))
+            merged["is_confirmed"] = rule_m.get("is_confirmed", merged.get("is_confirmed", False))
+        augmented.append(merged)
+
+    # Backfill source fields that LLM missed but rule-based found
+    for rule_m in rule_mappings:
+        src = rule_m.get("source_field", "")
+        if src and src not in existing_targets:
+            augmented.append(rule_m)
+
+    result = dict(base_config)
+    result["field_mappings"] = augmented
+    return result
+
+
 @router.post("/generate", response_model=APIResponse[ConfigurationResponse])
 async def generate_configuration(
     request: GenerateConfigRequest,
@@ -416,7 +470,14 @@ async def generate_configuration(
     generator: ConfigGenerator = Depends(get_config_generator),
     audit: AuditService = Depends(get_audit_service),
 ) -> APIResponse[ConfigurationResponse]:
-    """Generate integration configuration from a parsed document and adapter."""
+    """Generate integration configuration from a parsed document and adapter.
+
+    Pipeline:
+    1. If AI is enabled and Gemini key is present, attempt LLM generation first.
+    2. Always run the rule-based field mapper to validate/augment field mappings
+       with confidence scores.
+    3. If LLM fails, fall back to pure rule-based generation.
+    """
     # Fetch document
     doc_stmt = select(Document).where(
         Document.id == request.document_id,
@@ -434,7 +495,6 @@ async def generate_configuration(
     if not adapter_version:
         raise HTTPException(status_code=404, detail="Adapter version not found")
 
-    # Generate config
     parsed_result = json.loads(doc.parsed_result)
     av_dict = {
         "adapter_name": adapter_version.adapter_id,
@@ -450,7 +510,51 @@ async def generate_configuration(
         else {},
     }
 
-    config = generator.generate(parsed_result, av_dict)
+    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    generation_path = "rule_based"
+    config: dict[str, Any] = {}
+
+    if use_llm:
+        try:
+            llm_client = GeminiClient()
+            adapter_info = {
+                "name": av_dict["adapter_name"],
+                "version": av_dict["version"],
+                "base_url": av_dict["base_url"],
+                "auth_type": av_dict["auth_type"],
+            }
+            llm_config = await generate_config_llm(
+                adapter_info=adapter_info,
+                document_content=parsed_result,
+                client=llm_client,
+            )
+            # Always augment with rule-based field mapper
+            config = _augment_with_rule_based(llm_config, parsed_result, av_dict, generator)
+            generation_path = "llm_with_rule_augment"
+            logger.info(
+                "config_generated_via_llm_pipeline tenant=%s adapter=%s",
+                tenant.tenant_id,
+                av_dict["adapter_name"],
+            )
+        except (GeminiAPIError, Exception) as exc:  # noqa: BLE001
+            logger.warning(
+                "llm_generation_failed_falling_back tenant=%s adapter=%s error=%s",
+                tenant.tenant_id,
+                av_dict["adapter_name"],
+                str(exc),
+            )
+            config = generator.generate(parsed_result, av_dict)
+            generation_path = "rule_based_fallback"
+    else:
+        config = generator.generate(parsed_result, av_dict)
+        logger.info(
+            "config_generated_via_rule_based tenant=%s adapter=%s ai_enabled=%s",
+            tenant.tenant_id,
+            av_dict["adapter_name"],
+            settings.ai_enabled,
+        )
+
+    config["_generation_path"] = generation_path
 
     # Save configuration
     configuration = Configuration(
@@ -485,7 +589,11 @@ async def generate_configuration(
         action="generate_config",
         resource_type="configuration",
         resource_id=configuration.id,
-        details={"adapter_version": adapter_version.version, "document": doc.filename},
+        details={
+            "adapter_version": adapter_version.version,
+            "document": doc.filename,
+            "generation_path": generation_path,
+        },
     )
 
     field_mappings = config.get("field_mappings", [])
@@ -502,7 +610,7 @@ async def generate_configuration(
             created_at=configuration.created_at,
             updated_at=configuration.updated_at,
         ),
-        message="Configuration generated successfully",
+        message=f"Configuration generated via {generation_path}",
     )
 
 
