@@ -5,8 +5,10 @@ import {
   LayoutDashboard,
   Menu,
   Plug,
+  Search,
   Settings,
   Shield,
+  Webhook,
   X,
   Zap,
 } from "lucide-react";
@@ -20,6 +22,8 @@ const navItems = [
   { to: "/configurations", icon: Settings, label: "Configurations" },
   { to: "/simulations", icon: FlaskConical, label: "Simulations" },
   { to: "/audit", icon: Shield, label: "Audit Log" },
+  { to: "/search", icon: Search, label: "Search" },
+  { to: "/webhooks", icon: Webhook, label: "Webhooks" },
 ] as const;
 
 export default function Layout() {
@@ -54,7 +58,12 @@ export default function Layout() {
             <Zap className="h-4 w-4 text-white" />
           </div>
           <span className="text-lg font-bold tracking-tight text-white">FinSpark</span>
-          <button type="button" className="ml-auto lg:hidden" onClick={() => setSidebarOpen(false)}>
+          <button
+            type="button"
+            className="ml-auto lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          >
             <X className="h-5 w-5 text-gray-400" />
           </button>
         </div>
@@ -93,7 +102,12 @@ export default function Layout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}
         <header className="flex h-16 shrink-0 items-center gap-4 border-b border-gray-800 bg-gray-950/80 px-6 backdrop-blur-sm">
-          <button type="button" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
+          <button
+            type="button"
+            className="lg:hidden"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open navigation menu"
+          >
             <Menu className="h-5 w-5 text-gray-400" />
           </button>
           <div className="flex-1" />
@@ -104,7 +118,7 @@ export default function Layout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           <Outlet />
         </main>
       </div>
