@@ -1,0 +1,404 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+\usetheme{metropolis}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{tikz}
+% \usepackage{fontspec} % requires xelatex
+\usepackage{hyperref}
+
+% Color scheme matching our glassmorphism theme
+\definecolor{fsbg}{HTML}{08090E}
+\definecolor{fsteal}{HTML}{38E5CD}
+\definecolor{fstext}{HTML}{F1F5F9}
+\definecolor{fsmuted}{HTML}{94A3B8}
+\definecolor{fssurface}{HTML}{151922}
+
+\setbeamercolor{normal text}{fg=fstext,bg=fsbg}
+\setbeamercolor{alerted text}{fg=fsteal}
+\setbeamercolor{frametitle}{fg=fstext,bg=fssurface}
+\setbeamercolor{title}{fg=fstext}
+\setbeamercolor{subtitle}{fg=fsmuted}
+\setbeamercolor{block title}{fg=fstext,bg=fssurface}
+\setbeamercolor{block body}{bg=fssurface}
+\setbeamercolor{item}{fg=fsteal}
+
+\setbeamerfont{title}{series=\bfseries,size=\LARGE}
+\setbeamerfont{subtitle}{size=\normalsize}
+\setbeamerfont{frametitle}{series=\bfseries}
+
+\graphicspath{{screenshots/}}
+
+\title{FinSpark}
+\subtitle{AI-Assisted Integration Configuration \& Orchestration Engine\\for Enterprise Lending Platforms}
+\author{Akash Kumar}
+\institute{IIT Patna}
+\date{April 2026}
+
+\begin{document}
+
+% ─── Title ────────────────────────────────────────────────────────────────────
+\begin{frame}[plain]
+\maketitle
+\end{frame}
+
+% ─── Problem Statement ───────────────────────────────────────────────────────
+\begin{frame}{The Problem}
+\begin{columns}
+\begin{column}{0.55\textwidth}
+\textbf{Indian lending platforms} integrate with 8+ external APIs:
+\begin{itemize}
+    \item CIBIL/Experian credit bureaus
+    \item Aadhaar eKYC verification
+    \item GST verification service
+    \item Payment gateways (Razorpay)
+    \item Fraud detection engines
+    \item SMS/Email notification
+    \item Account Aggregator (AA)
+\end{itemize}
+\end{column}
+\begin{column}{0.4\textwidth}
+\alert{Pain points:}
+\begin{itemize}
+    \item Manual configuration takes \textbf{2--4 weeks}
+    \item Field mapping errors cause \textbf{data loss}
+    \item No standardized testing before deployment
+    \item Each adapter has different auth, schema, SLA
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Solution ────────────────────────────────────────────────────────────────
+\begin{frame}{FinSpark Solution}
+\begin{center}
+\textbf{Upload a BRD/API spec} $\rightarrow$ \textbf{AI generates config} $\rightarrow$ \textbf{Simulate \& validate} $\rightarrow$ \textbf{Deploy}
+\end{center}
+\vspace{0.5em}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\textbf{Core Capabilities:}
+\begin{enumerate}
+    \item Document parsing (PDF, DOCX, YAML, JSON)
+    \item AI-powered field mapping (Gemini 3)
+    \item Rule-based validation \& augmentation
+    \item Mock API simulation (8 adapters)
+    \item Configuration lifecycle management
+    \item Multi-tenant audit trail
+\end{enumerate}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Tech Stack:}
+\begin{itemize}
+    \item \textbf{Backend}: FastAPI + SQLAlchemy + asyncio
+    \item \textbf{Frontend}: React 18 + TypeScript + Tailwind
+    \item \textbf{AI}: Google Gemini 3 Flash (REST)
+    \item \textbf{DB}: SQLite (dev) / PostgreSQL (prod)
+    \item \textbf{Testing}: 800+ tests, 82\% coverage
+    \item \textbf{Deploy}: Docker Compose
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Architecture ────────────────────────────────────────────────────────────
+\begin{frame}{System Architecture}
+\begin{center}
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    box/.style={rectangle, draw=fsteal, fill=fssurface, text=fstext, rounded corners=4pt, minimum height=0.8cm, minimum width=2.8cm, font=\small\bfseries},
+    arrow/.style={->, thick, fsteal}
+]
+    % Frontend
+    \node[box] (fe) {React Frontend};
+
+    % API Layer
+    \node[box, right=2cm of fe] (api) {FastAPI (43 endpoints)};
+
+    % Services
+    \node[box, above right=0.8cm and 1.5cm of api] (parser) {Document Parser};
+    \node[box, right=1.5cm of api] (config) {Config Engine};
+    \node[box, below right=0.8cm and 1.5cm of api] (sim) {Simulation Engine};
+
+    % External
+    \node[box, right=2cm of config] (gemini) {Gemini 3 API};
+    \node[box, below=0.8cm of api] (db) {SQLite / PostgreSQL};
+
+    % Arrows
+    \draw[arrow] (fe) -- (api);
+    \draw[arrow] (api) -- (parser);
+    \draw[arrow] (api) -- (config);
+    \draw[arrow] (api) -- (sim);
+    \draw[arrow] (config) -- (gemini);
+    \draw[arrow] (api) -- (db);
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+% ─── Dashboard ───────────────────────────────────────────────────────────────
+\begin{frame}{Dashboard}
+\begin{center}
+\includegraphics[width=0.92\textwidth]{01-dashboard.png}
+\end{center}
+\vspace{-0.5em}
+{\small Real-time metrics: 8 adapters, document/config counts, configuration summary with confidence scores, weekly activity charts.}
+\end{frame}
+
+% ─── Document Upload ─────────────────────────────────────────────────────────
+\begin{frame}{Step 1: Document Upload \& Parsing}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\includegraphics[width=\textwidth]{03-document-uploaded.png}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Supported formats:}
+\begin{itemize}
+    \item OpenAPI YAML/JSON specs
+    \item BRD documents (DOCX, PDF)
+    \item Statement of Work
+\end{itemize}
+\vspace{0.5em}
+\textbf{Parser extracts:}
+\begin{itemize}
+    \item API endpoints \& methods
+    \item Request/response fields
+    \item Authentication schemes
+    \item SLA requirements
+\end{itemize}
+\vspace{0.5em}
+{\color{fsteal}95\% confidence} on CIBIL Bureau API spec $\rightarrow$ 4 endpoints, 28 fields, 2 auth schemes extracted.
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Parsed Document Detail ──────────────────────────────────────────────────
+\begin{frame}{Parsed Document Detail}
+\begin{center}
+\includegraphics[width=0.85\textwidth]{04-document-detail-modal.png}
+\end{center}
+\vspace{-0.5em}
+{\small 5-tab modal: Summary (title, confidence, services), Endpoints (path/method table), Fields (28 with types \& required flags), Auth (OAuth2 + API Key), Raw JSON.}
+\end{frame}
+
+% ─── Configuration Generation ────────────────────────────────────────────────
+\begin{frame}{Step 2: AI-Powered Configuration Generation}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\includegraphics[width=\textwidth]{08-config-form-filled.png}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Two-stage pipeline:}
+\begin{enumerate}
+    \item \textbf{Gemini 3 Flash} generates initial config from document entities + adapter schema
+    \item \textbf{Rule-based mapper} augments with fuzzy field matching, synonym lookup, confidence scores
+\end{enumerate}
+\vspace{0.5em}
+\textbf{Result:}
+\begin{itemize}
+    \item 28/28 fields mapped at 100\% confidence
+    \item Base URL, auth config, endpoints auto-configured
+    \item Transformation rules suggested
+    \item Retry policy \& timeout configured
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Field Mappings ──────────────────────────────────────────────────────────
+\begin{frame}{Configuration Detail: Editable Field Mappings}
+\begin{center}
+\includegraphics[width=0.92\textwidth]{09-config-generated.png}
+\end{center}
+\vspace{-0.5em}
+{\small Lifecycle stepper (Draft $\rightarrow$ Configured $\rightarrow$ Validating $\rightarrow$ Testing $\rightarrow$ Active). Editable target fields, transform dropdowns, confidence bars. Export JSON/YAML. History \& rollback.}
+\end{frame}
+
+% ─── Simulation ──────────────────────────────────────────────────────────────
+\begin{frame}{Step 3: Simulation \& Testing}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\includegraphics[width=\textwidth]{12-simulation-results.png}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{8/8 tests passed:}
+\begin{enumerate}
+    \item Config structure validation {\color{fsteal}\checkmark}
+    \item Field mapping validation {\color{fsteal}\checkmark}
+    \item Endpoint /scores test {\color{fsteal}\checkmark}
+    \item Endpoint /reports test {\color{fsteal}\checkmark}
+    \item Endpoint /batch/inquiries {\color{fsteal}\checkmark}
+    \item Endpoint /consent/verify {\color{fsteal}\checkmark}
+    \item Auth config validation {\color{fsteal}\checkmark}
+    \item Hooks validation {\color{fsteal}\checkmark}
+\end{enumerate}
+\vspace{0.3em}
+Mock responses generated per adapter type with realistic data (CIBIL scores 300--900, account summaries).
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Adapters ────────────────────────────────────────────────────────────────
+\begin{frame}{Pre-Built Adapter Catalog}
+\begin{center}
+\includegraphics[width=0.92\textwidth]{15-adapters-page.png}
+\end{center}
+\vspace{-0.5em}
+{\small 8 adapters: CIBIL (v1+v2), Aadhaar eKYC, GST Verification, Payment Gateway, Fraud Detection, SMS Gateway, Account Aggregator (AA), Email Gateway. Category filtering.}
+\end{frame}
+
+% ─── Audit Log ───────────────────────────────────────────────────────────────
+\begin{frame}{Governance: Audit Trail}
+\begin{center}
+\includegraphics[width=0.92\textwidth]{14-audit-log.png}
+\end{center}
+\vspace{-0.5em}
+{\small Immutable audit log with pagination, action/resource filters. Tracks: uploads, config generation, simulations, deletions, transitions.}
+\end{frame}
+
+% ─── Security ────────────────────────────────────────────────────────────────
+\begin{frame}{Security \& Compliance}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\textbf{Authentication \& Authorization:}
+\begin{itemize}
+    \item JWT Bearer token auth (production)
+    \item Role-based access control (RBAC)
+    \item Multi-tenant isolation
+    \item Secret key validation at startup
+\end{itemize}
+\vspace{0.5em}
+\textbf{Data Protection:}
+\begin{itemize}
+    \item PII masking (Aadhaar, PAN, phone)
+    \item Fernet AES-256 encryption for secrets
+    \item Path traversal protection on uploads
+    \item File size \& type validation
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Infrastructure:}
+\begin{itemize}
+    \item CORS restricted to known origins
+    \item Security headers (CSP, HSTS, X-Frame)
+    \item Rate limiting (100 req/min)
+    \item Structured logging (JSON)
+    \item SSRF protection on webhooks
+\end{itemize}
+\vspace{0.5em}
+\textbf{Testing:}
+\begin{itemize}
+    \item 800+ automated tests
+    \item 82\% code coverage
+    \item CI/CD via GitHub Actions
+    \item Docker Compose deployment
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Results ─────────────────────────────────────────────────────────────────
+\begin{frame}{Results \& Metrics}
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Notes} \\
+\midrule
+API Endpoints & 34 & Across 10 route modules \\
+Pre-built Adapters & 8 & Indian fintech ecosystem \\
+Test Suite & 800+ & Unit + integration + E2E \\
+Code Coverage & 82\% & Target: 80\% \\
+Field Mapping Accuracy & 100\% & On CIBIL v2 spec (28/28 fields) \\
+Simulation Pass Rate & 8/8 & All steps pass \\
+Config Generation & $<$5s & Via Gemini 3 Flash \\
+Parse Confidence & 95\% & On OpenAPI YAML specs \\
+Frontend Pages & 8 & Dashboard, Docs, Configs, Sims, etc. \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{frame}
+
+% ─── Live Demo ───────────────────────────────────────────────────────────────
+\begin{frame}{Live Demo Flow}
+\begin{center}
+\begin{tikzpicture}[
+    node distance=0.6cm,
+    step/.style={rectangle, draw=fsteal, fill=fssurface, text=fstext, rounded corners=4pt, minimum height=0.7cm, minimum width=4cm, font=\small},
+    arrow/.style={->, thick, fsteal}
+]
+    \node[step] (s1) {1. Upload CIBIL API Spec (YAML)};
+    \node[step, below=of s1] (s2) {2. View Parsed Fields (28 fields, 4 endpoints)};
+    \node[step, below=of s2] (s3) {3. Generate Config (Gemini 3 + Rule Engine)};
+    \node[step, below=of s3] (s4) {4. Review Field Mappings (100\% confidence)};
+    \node[step, below=of s4] (s5) {5. Validate Configuration};
+    \node[step, below=of s5] (s6) {6. Run Simulation (8/8 pass)};
+    \node[step, below=of s6] (s7) {7. Transition: Configured $\rightarrow$ Validating $\rightarrow$ Testing $\rightarrow$ Active};
+
+    \draw[arrow] (s1) -- (s2);
+    \draw[arrow] (s2) -- (s3);
+    \draw[arrow] (s3) -- (s4);
+    \draw[arrow] (s4) -- (s5);
+    \draw[arrow] (s5) -- (s6);
+    \draw[arrow] (s6) -- (s7);
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+% ─── Hosting Plan ────────────────────────────────────────────────────────────
+\begin{frame}{Deployment Architecture}
+\begin{columns}
+\begin{column}{0.55\textwidth}
+\textbf{Option 1: Render (Recommended)}
+\begin{itemize}
+    \item Backend: Web Service (Python)
+    \item Frontend: Static Site
+    \item Database: Render PostgreSQL
+    \item Cost: Free tier available
+\end{itemize}
+\vspace{0.5em}
+\textbf{Option 2: Railway}
+\begin{itemize}
+    \item Single \texttt{railway.json} config
+    \item Auto-deploy from GitHub
+    \item Built-in PostgreSQL
+\end{itemize}
+\end{column}
+\begin{column}{0.4\textwidth}
+\textbf{Option 3: Docker Compose}
+\begin{itemize}
+    \item Self-hosted on any VPS
+    \item \texttt{docker compose up}
+    \item Nginx reverse proxy
+    \item SSL via Let's Encrypt
+\end{itemize}
+\vspace{0.5em}
+\textbf{Environment:}
+\begin{itemize}
+    \item \texttt{GEMINI\_API\_KEY}
+    \item \texttt{DATABASE\_URL}
+    \item \texttt{APP\_SECRET\_KEY}
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─── Thank You ───────────────────────────────────────────────────────────────
+\begin{frame}[plain]
+\begin{center}
+\vspace{2cm}
+{\Huge\bfseries Thank You}
+\vspace{1em}
+
+{\large\color{fsteal} FinSpark --- AI-Assisted Integration Platform}
+\vspace{1.5em}
+
+{\color{fsmuted}
+\begin{tabular}{rl}
+GitHub: & github.com/Akasxh/finspark \\
+Demo: & localhost:5173 \\
+API Docs: & localhost:8000/docs \\
+\end{tabular}
+}
+\end{center}
+\end{frame}
+
+\end{document}
