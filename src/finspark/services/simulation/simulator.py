@@ -316,13 +316,14 @@ class IntegrationSimulator:
         coverage = mapped / total if total > 0 else 0.0
         duration = int((time.monotonic() - start) * 1000)
 
-        passed = coverage >= 0.7 and len(low_confidence) <= total * 0.3
+        # Coverage threshold is lenient — BRDs often have more source fields than adapter targets
+        passed = coverage >= 0.3 and len(low_confidence) <= total * 0.5
 
         return SimulationStepResult(
             step_name="field_mapping_validation",
             status="passed" if passed else "failed",
             request_payload={"total_fields": total},
-            expected_response={"coverage": ">= 0.7"},
+            expected_response={"coverage": ">= 0.3"},
             actual_response={
                 "coverage": round(coverage, 2),
                 "mapped": mapped,

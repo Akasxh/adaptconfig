@@ -262,7 +262,7 @@ function SimRow({ sim, configName }: { sim: Simulation; configName?: string }) {
         />
       </button>
 
-      {open && sim.steps && sim.steps.length > 0 && (
+      {open && (
         <div
           style={{
             borderTop: `1px solid ${C.border}`,
@@ -272,22 +272,30 @@ function SimRow({ sim, configName }: { sim: Simulation; configName?: string }) {
             gap: 8,
           }}
         >
-          <p
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              color: C.muted,
-              marginBottom: 4,
-            }}
-          >
-            Steps ({sim.steps.length})
-          </p>
-          {sim.steps.map((step, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: steps lack stable id
-            <StepRow key={i} step={step} />
-          ))}
+          {sim.steps && sim.steps.length > 0 ? (
+            <>
+              <p
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: C.muted,
+                  marginBottom: 4,
+                }}
+              >
+                Steps ({sim.steps.length})
+              </p>
+              {sim.steps.map((step, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: steps lack stable id
+                <StepRow key={i} step={step} />
+              ))}
+            </>
+          ) : (
+            <p style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>
+              Step details not available for this simulation. Run a new simulation to see detailed results.
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -10,20 +10,23 @@ from finspark.schemas.configurations import FieldMapping
 
 # Domain-specific field synonyms for Indian fintech
 FIELD_SYNONYMS: dict[str, list[str]] = {
-    "pan_number": ["pan", "pan_no", "pan_card", "permanent_account_number", "pan_id"],
-    "aadhaar_number": ["aadhaar", "aadhaar_no", "aadhar", "uid", "aadhaar_id"],
+    "pan_number": ["pan", "pan_no", "pan_card", "permanent_account_number", "pan_id", "applicant_pan"],
+    "aadhaar_number": ["aadhaar", "aadhaar_no", "aadhar", "uid", "aadhaar_id", "applicant_aadhaar"],
     "gstin": ["gst_number", "gst_no", "gst_id", "gst_in"],
-    "mobile_number": ["mobile", "phone", "phone_number", "mobile_no", "contact_number", "cell"],
-    "email_address": ["email", "email_id", "mail", "email_addr"],
+    "mobile_number": ["mobile", "phone", "phone_number", "mobile_no", "contact_number", "cell", "applicant_mobile"],
+    "email_address": ["email", "email_id", "mail", "email_addr", "applicant_email"],
     "full_name": ["name", "applicant_name", "customer_name", "borrower_name", "full_name"],
-    "date_of_birth": ["dob", "birth_date", "date_of_birth", "birthdate"],
+    "date_of_birth": ["dob", "birth_date", "date_of_birth", "birthdate", "applicant_dob"],
     "address": ["address", "residential_address", "current_address", "permanent_address"],
-    "loan_amount": ["amount", "loan_amount", "principal", "requested_amount", "sanctioned_amount"],
+    "loan_amount": ["amount", "loan_amount", "principal", "requested_amount", "sanctioned_amount", "requested_loan_amount"],
+    "loan_type": ["loan_type", "product_type", "loan_product_type", "product_code"],
     "account_number": ["account_no", "acct_number", "bank_account", "account_num"],
     "ifsc_code": ["ifsc", "ifsc_code", "bank_code", "branch_code"],
-    "credit_score": ["score", "cibil_score", "credit_score", "bureau_score"],
+    "credit_score": ["score", "cibil_score", "credit_score", "bureau_score", "score_range"],
     "reference_id": ["ref_id", "reference", "ref_number", "reference_number", "txn_id"],
     "customer_id": ["cust_id", "customer_id", "client_id", "borrower_id"],
+    "consent_id": ["consent", "consent_id", "consent_handle"],
+    "applicants": ["applicants", "applicant_list", "batch_applicants"],
 }
 
 # Reverse map for quick lookup

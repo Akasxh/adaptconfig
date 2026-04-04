@@ -90,10 +90,18 @@ function SkeletonRow() {
   );
 }
 
-function ConfidenceBar({ value }: { value: number }) {
+function ConfidenceBar({ value, hasTarget }: { value: number; hasTarget?: boolean }) {
   const pct = Math.round(value * 100);
-  const barColor = pct >= 70 ? "var(--color-teal)" : pct >= 50 ? "var(--color-warning)" : "var(--color-error)";
-  const textColor = pct >= 70 ? "var(--color-teal)" : pct >= 50 ? "var(--color-warning-text)" : "var(--color-error-text)";
+  // If no target field mapped, show "No match" instead of a 0% bar
+  if (!hasTarget && pct === 0) {
+    return (
+      <span style={{ fontSize: 11, fontStyle: "italic", color: "var(--color-text-muted)" }}>
+        No match
+      </span>
+    );
+  }
+  const barColor = pct >= 70 ? "var(--color-success)" : pct >= 50 ? "var(--color-warning)" : "var(--color-error)";
+  const textColor = pct >= 70 ? "var(--color-success-text)" : pct >= 50 ? "var(--color-warning-text)" : "var(--color-error-text)";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <div style={{ flex: 1, height: 5, borderRadius: 9999, background: "var(--color-border-strong)", overflow: "hidden" }}>
@@ -382,7 +390,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
                   />
                 </td>
                 <td style={{ padding: "8px 12px", minWidth: 120 }}>
-                  <ConfidenceBar value={fm.confidence} />
+                  <ConfidenceBar value={fm.confidence} hasTarget={!!fm.target_field} />
                 </td>
                 <td style={{ padding: "8px 12px" }}>
                   <select

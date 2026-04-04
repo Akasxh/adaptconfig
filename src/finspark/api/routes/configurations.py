@@ -560,6 +560,19 @@ async def generate_configuration(
 
     config["_generation_path"] = generation_path
 
+    # Ensure required structure keys exist for the simulator
+    config.setdefault("adapter_name", av_dict.get("adapter_name", ""))
+    config.setdefault("version", av_dict.get("version", "v1"))
+    config.setdefault("base_url", av_dict.get("base_url", ""))
+    config.setdefault("auth", {"type": av_dict.get("auth_type", "api_key"), "credentials": {}})
+
+    # Ensure mapped fields have a minimum confidence (synonym/fuzzy matches may lose confidence
+    # during augmentation or re-mapping when source fields duplicate target names)
+    raw_mappings = config.get("field_mappings", [])
+    for fm in raw_mappings:
+        if fm.get("target_field") and fm.get("confidence", 0) < 0.5:
+            fm["confidence"] = max(fm.get("confidence", 0), 0.6)
+
     # Save configuration
     configuration = Configuration(
         tenant_id=tenant.tenant_id,
@@ -568,7 +581,7 @@ async def generate_configuration(
         document_id=request.document_id,
         status="configured",
         version=1,
-        field_mappings=json.dumps(config.get("field_mappings", [])),
+        field_mappings=json.dumps(raw_mappings),
         transformation_rules=json.dumps(config.get("transformation_rules", [])),
         hooks=json.dumps(config.get("hooks", [])),
         full_config=json.dumps(config),

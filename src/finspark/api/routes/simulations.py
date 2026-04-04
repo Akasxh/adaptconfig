@@ -39,21 +39,28 @@ async def list_simulations(
     result = await db.execute(stmt)
     sims = result.scalars().all()
 
-    data = [
-        SimulationResponse(
-            id=sim.id,
-            configuration_id=sim.configuration_id,
-            status=sim.status,
-            test_type=sim.test_type,
-            total_tests=sim.total_tests,
-            passed_tests=sim.passed_tests,
-            failed_tests=sim.failed_tests,
-            duration_ms=sim.duration_ms,
-            steps=[],
-            created_at=sim.created_at,
+    data = []
+    for sim in sims:
+        steps = []
+        if sim.results:
+            try:
+                steps = [SimulationStepResult(**s) for s in json.loads(sim.results)]
+            except (json.JSONDecodeError, TypeError):
+                steps = []
+        data.append(
+            SimulationResponse(
+                id=sim.id,
+                configuration_id=sim.configuration_id,
+                status=sim.status,
+                test_type=sim.test_type,
+                total_tests=sim.total_tests,
+                passed_tests=sim.passed_tests,
+                failed_tests=sim.failed_tests,
+                duration_ms=sim.duration_ms,
+                steps=steps,
+                created_at=sim.created_at,
+            )
         )
-        for sim in sims
-    ]
     return APIResponse(success=True, data=data, message="")
 
 
