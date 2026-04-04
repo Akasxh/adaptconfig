@@ -26,13 +26,19 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom"],
-          query: ["@tanstack/react-query"],
-          charts: ["recharts"],
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom") || id.includes("node_modules/react/") || id.includes("node_modules/react-router")) {
+            return "vendor";
+          }
+          if (id.includes("node_modules/@tanstack/react-query")) {
+            return "query";
+          }
+          if (id.includes("node_modules/recharts")) {
+            return "charts";
+          }
         },
       },
     },

@@ -1,5 +1,6 @@
 """Configuration generation and management routes."""
 
+import asyncio
 import io
 import json
 import logging
@@ -547,10 +548,10 @@ async def generate_configuration(
                 av_dict["adapter_name"],
                 str(exc),
             )
-            config = generator.generate(parsed_result, av_dict)
+            config = await asyncio.to_thread(generator.generate, parsed_result, av_dict)
             generation_path = "rule_based_fallback"
     else:
-        config = generator.generate(parsed_result, av_dict)
+        config = await asyncio.to_thread(generator.generate, parsed_result, av_dict)
         logger.info(
             "config_generated_via_rule_based tenant=%s adapter=%s ai_enabled=%s",
             tenant.tenant_id,

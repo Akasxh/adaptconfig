@@ -2,6 +2,7 @@ import { searchApi } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Search as SearchIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 interface SearchResult {
   id: string;
@@ -59,13 +60,23 @@ const badgeStyle = (type: string): React.CSSProperties => {
   };
 };
 
+const getRoute = (item: SearchResult): string => {
+  switch (item.type) {
+    case "adapter": return "/adapters";
+    case "configuration": return "/configurations";
+    case "simulation": return "/simulations";
+    default: return "/";
+  }
+};
+
 export default function Search() {
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebounce(query, 300);
+  const navigate = useNavigate();
 
   const { data, isLoading, isError } = useQuery<{ data: SearchData }>({
     queryKey: ["search", debouncedQuery],
-    queryFn: () => searchApi.search(debouncedQuery) as Promise<{ data: SearchData }>,
+    queryFn: () => searchApi.search(debouncedQuery.trim()) as Promise<{ data: SearchData }>,
     enabled: !!debouncedQuery.trim(),
     staleTime: 30_000,
   });
@@ -183,11 +194,16 @@ export default function Search() {
                   <li
                     key={item.id}
                     className="card-hover"
+                    onClick={() => navigate(getRoute(item))}
+                    role="link"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === "Enter") navigate(getRoute(item)); }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       gap: 16,
                       padding: "14px 20px",
+                      cursor: "pointer",
                       borderBottom: i < items.length - 1 ? "1px solid rgba(30,45,71,0.5)" : "none",
                     }}
                   >

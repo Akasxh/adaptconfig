@@ -1,5 +1,6 @@
 """Analytics service - provides integration metrics and insights."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -24,13 +25,23 @@ class AnalyticsService:
         simulations = await self._simulation_stats()
         documents = await self._document_stats()
         audit_count = await self._audit_count()
+        weekly_activity = await self._weekly_activity()
+        throughput = await self._throughput()
+        total_processed = await self._total_processed()
+        total_warnings = await self._total_warnings()
 
         return {
+            # Original fields (backward compat)
             "configurations": configs,
             "simulations": simulations,
             "documents": documents,
             "audit_entries": audit_count,
             "health_score": self._calculate_health_score(configs, simulations),
+            # New fields for frontend charts
+            "weekly_activity": weekly_activity,
+            "throughput": throughput,
+            "total_processed": total_processed,
+            "total_warnings": total_warnings,
         }
 
     async def _config_stats(self) -> dict[str, Any]:
@@ -93,6 +104,95 @@ class AnalyticsService:
         )
         result = await self.db.execute(stmt)
         return result.scalar() or 0
+
+    async def _weekly_activity(self) -> list[dict[str, Any]]:
+        """Audit logs grouped by day of week for the last 7 days."""
+        cutoff = datetime.now(UTC) - timedelta(days=7)
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        stmt = (
+            select(AuditLog.created_at, AuditLog.resource_type)
+            .where(
+                AuditLog.tenant_id == self.tenant_id,
+                AuditLog.created_at >= cutoff,
+            )
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        buckets: dict[int, dict[str, int]] = {
+            i: {"documents": 0, "simulations": 0} for i in range(7)
+        }
+        for created_at, resource_type in rows:
+            dow = created_at.weekday()  # 0=Mon
+            if resource_type == "document":
+                buckets[dow]["documents"] += 1
+            elif resource_type == "simulation":
+                buckets[dow]["simulations"] += 1
+
+        return [
+            {"name": day_names[i], "documents": buckets[i]["documents"], "simulations": buckets[i]["simulations"]}
+            for i in range(7)
+        ]
+
+    async def _throughput(self) -> list[dict[str, Any]]:
+        """Audit logs grouped by hour (4-hour buckets)."""
+        cutoff = datetime.now(UTC) - timedelta(days=1)
+
+        stmt = (
+            select(AuditLog.created_at)
+            .where(
+                AuditLog.tenant_id == self.tenant_id,
+                AuditLog.created_at >= cutoff,
+            )
+        )
+        result = await self.db.execute(stmt)
+        rows = result.scalars().all()
+
+        buckets: dict[int, int] = {h: 0 for h in range(0, 24, 4)}
+        for created_at in rows:
+            hour = created_at.hour
+            bucket = (hour // 4) * 4
+            buckets[bucket] += 1
+
+        return [
+            {"hour": f"{h:02d}:00", "records": buckets[h]}
+            for h in sorted(buckets)
+        ]
+
+    async def _total_processed(self) -> int:
+        """Count of all documents + configurations for the tenant."""
+        doc_stmt = select(func.count()).select_from(Document).where(
+            Document.tenant_id == self.tenant_id
+        )
+        cfg_stmt = select(func.count()).select_from(Configuration).where(
+            Configuration.tenant_id == self.tenant_id
+        )
+        doc_result = await self.db.execute(doc_stmt)
+        cfg_result = await self.db.execute(cfg_stmt)
+        return (doc_result.scalar() or 0) + (cfg_result.scalar() or 0)
+
+    async def _total_warnings(self) -> int:
+        """Count configs in draft/error status + failed simulations."""
+        warn_cfg_stmt = (
+            select(func.count())
+            .select_from(Configuration)
+            .where(
+                Configuration.tenant_id == self.tenant_id,
+                Configuration.status.in_(["draft", "error", "deprecated"]),
+            )
+        )
+        fail_sim_stmt = (
+            select(func.count())
+            .select_from(Simulation)
+            .where(
+                Simulation.tenant_id == self.tenant_id,
+                Simulation.status == "failed",
+            )
+        )
+        cfg_result = await self.db.execute(warn_cfg_stmt)
+        sim_result = await self.db.execute(fail_sim_stmt)
+        return (cfg_result.scalar() or 0) + (sim_result.scalar() or 0)
 
     @staticmethod
     def _calculate_health_score(configs: dict[str, Any], simulations: dict[str, Any]) -> float:

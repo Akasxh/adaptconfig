@@ -74,18 +74,6 @@ function formatLarge(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-function computeHealthScore(
-  adapterTotal: number,
-  activeAdapters: number,
-  configCount: number,
-  warnings: number
-): number {
-  if (adapterTotal === 0 && configCount === 0) return 100;
-  const activeRatio = adapterTotal > 0 ? activeAdapters / adapterTotal : 1;
-  const warnPenalty = Math.min(warnings * 2, 30);
-  return Math.round(activeRatio * 100 - warnPenalty);
-}
-
 function buildPieData(adapters: Array<{ is_active: boolean; status?: string }>) {
   const counts = { Active: 0, Inactive: 0, Error: 0 };
   for (const a of adapters) {
@@ -276,8 +264,8 @@ export default function Dashboard() {
   const totalWarnings = analyticsData?.total_warnings ?? 0;
   const totalProcessed = analyticsData?.total_processed ?? 0;
 
-  // Health score (computed, not hardcoded)
-  const healthScore = computeHealthScore(adapterTotal, activeAdapters, configCount, totalWarnings);
+  // Health score from backend analytics
+  const healthScore = Math.round(analyticsData?.health_score ?? 100);
   const healthColor = healthScore >= 80 ? TEAL : healthScore >= 50 ? "#fbbf24" : ERROR_COLOR;
   const healthBg =
     healthScore >= 80

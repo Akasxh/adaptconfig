@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from finspark.schemas.common import DocType
 from finspark.schemas.documents import (
     ExtractedAuth,
     ExtractedEndpoint,
@@ -33,8 +34,17 @@ class DocumentParser:
         re.IGNORECASE,
     )
 
+    @staticmethod
+    def _normalize_doc_type(doc_type: str) -> str:
+        """Normalize doc_type to a valid DocType enum value, defaulting to 'brd'."""
+        valid = {e.value for e in DocType}
+        if doc_type not in valid:
+            return "brd"
+        return doc_type
+
     def parse(self, file_path: Path, doc_type: str = "auto") -> ParsedDocumentResult:
         """Parse a document and extract structured information."""
+        doc_type = self._normalize_doc_type(doc_type)
         suffix = file_path.suffix.lower()
 
         if suffix == ".docx":
@@ -50,6 +60,7 @@ class DocumentParser:
 
     def parse_text(self, text: str, doc_type: str = "brd") -> ParsedDocumentResult:
         """Parse raw text content and extract structured information."""
+        doc_type = self._normalize_doc_type(doc_type)
         endpoints = self._extract_endpoints(text)
         fields = self._extract_fields(text)
         auth = self._extract_auth_requirements(text)
@@ -133,7 +144,7 @@ class DocumentParser:
         # Expected format: "#/components/schemas/FooBar"
         if not ref.startswith("#/"):
             return {}
-        parts = ref.lstrip("#/").split("/")
+        parts = ref.removeprefix("#/").split("/")
         node: Any = spec
         for part in parts:
             if not isinstance(node, dict):
@@ -207,7 +218,7 @@ class DocumentParser:
                         )
 
                 # Extract fields from inline response schema (200/201/202)
-                for status_code in ("200", "201", "202"):
+                for status_code in ("200", "201", "202", 200, 201, 202):
                     resp_schema = self._resolve_schema(
                         details.get("responses", {})
                         .get(status_code, {})

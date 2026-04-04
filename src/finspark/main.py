@@ -46,21 +46,19 @@ logging.getLogger().addFilter(PIIMaskingFilter())
 async def _run_migrations() -> None:
     """Run Alembic migrations, falling back to create_all for dev."""
     try:
-        import subprocess
-
-        result = subprocess.run(
-            ["alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            timeout=30,
+        proc = await asyncio.create_subprocess_exec(
+            "alembic", "upgrade", "head",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode == 0:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode == 0:
             logger.info("Alembic migrations applied successfully")
             return
         logger.warning(
             "Alembic migration failed (rc=%d): %s — falling back to create_all",
-            result.returncode,
-            result.stderr.strip(),
+            proc.returncode,
+            stderr.decode().strip(),
         )
     except Exception as exc:
         logger.warning("Alembic unavailable (%s) — falling back to create_all", exc)

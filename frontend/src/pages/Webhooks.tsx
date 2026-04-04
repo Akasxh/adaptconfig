@@ -38,7 +38,7 @@ function AddForm({ onClose }: { onClose: () => void }) {
   const toggle = (e: EventType) => setEvents((p) => p.includes(e) ? p.filter((x) => x !== e) : [...p, e]);
 
   const mut = useMutation({
-    mutationFn: (p: { url: string; events: string[]; secret?: string }) => webhooksApi.create(p),
+    mutationFn: (p: { url: string; events: string[]; secret: string }) => webhooksApi.create(p),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["webhooks"] }); onClose(); },
   });
 
@@ -49,7 +49,7 @@ function AddForm({ onClose }: { onClose: () => void }) {
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); if (url && events.length) mut.mutate({ url, events, secret: secret || undefined }); }}
+      onSubmit={(e) => { e.preventDefault(); if (url && events.length && secret) mut.mutate({ url, events, secret }); }}
       className="card animate-fade-in"
       style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}
     >

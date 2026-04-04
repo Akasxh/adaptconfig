@@ -1,855 +1,802 @@
-# FinSpark Architecture Documentation
-
-> AI-Assisted Integration Configuration & Orchestration Engine for Enterprise Lending Platforms
-
----
+# FinSpark Architecture & Internals
 
 ## Table of Contents
 
-1. [System Overview](#1-system-overview)
-2. [Data Flow](#2-data-flow)
-3. [Database Schema](#3-database-schema)
-4. [Integration Lifecycle State Machine](#4-integration-lifecycle-state-machine)
-5. [Module Interaction](#5-module-interaction)
-6. [API Route Map](#6-api-route-map)
-7. [Security Architecture](#7-security-architecture)
+- [1. System Overview](#1-system-overview)
+- [2. Backend Architecture](#2-backend-architecture)
+- [3. Frontend Architecture](#3-frontend-architecture)
+- [4. Key Workflows](#4-key-workflows)
+- [5. Data Model](#5-data-model)
+- [6. Configuration](#6-configuration)
+- [7. Testing Strategy](#7-testing-strategy)
 
 ---
 
 ## 1. System Overview
 
-FinSpark is a multi-tenant platform that automates the configuration and testing of third-party API integrations for Indian lending platforms. It parses BRD/SOW documents, matches them to pre-built adapters (CIBIL, eKYC, GST, Payment, Fraud, SMS), generates integration configurations with intelligent field mapping, and validates them through a simulation framework -- all without writing code.
+FinSpark is an AI-assisted integration configuration and orchestration engine for enterprise lending platforms. It automates the process of configuring integrations with Indian fintech services (credit bureaus, KYC providers, payment gateways, GST verification, fraud detection, Account Aggregators) by parsing business requirement documents and generating adapter configurations with intelligent field mapping.
 
-### C4 Container Diagram
+### High-Level Architecture
 
-```mermaid
-C4Context
-    title FinSpark - System Container Diagram
-
-    Person(user, "Platform Engineer", "Configures and manages integrations")
-    Person(auditor, "Compliance Auditor", "Reviews audit trails and security")
-
-    Enterprise_Boundary(ext, "External Systems") {
-        System_Ext(brd_docs, "BRD/SOW Documents", "DOCX, PDF, YAML, JSON specs")
-        System_Ext(cibil, "CIBIL Bureau API", "Credit score & report")
-        System_Ext(ekyc, "Aadhaar eKYC API", "Identity verification")
-        System_Ext(gst, "GST Verification API", "GSTIN validation")
-        System_Ext(payment, "Payment Gateway API", "NEFT/IMPS/RTGS/UPI")
-        System_Ext(fraud, "Fraud Detection API", "Risk scoring")
-        System_Ext(sms, "SMS Gateway API", "Notification delivery")
-    }
-
-    Enterprise_Boundary(finspark, "FinSpark Platform") {
-
-        Container_Boundary(frontend_boundary, "Presentation Layer") {
-            Container(react_app, "React Dashboard", "React 18, TypeScript, Vite, TanStack Query, Recharts", "Real-time metrics, adapter catalog, config management UI")
-        }
-
-        Container_Boundary(api_boundary, "API Layer") {
-            Container(fastapi, "FastAPI Application", "Python 3.12, FastAPI, Pydantic v2", "REST API with OpenAPI docs, SSE streaming, file uploads")
-        }
-
-        Container_Boundary(middleware_boundary, "Cross-Cutting Middleware") {
-            Container(tenant_mw, "Tenant Middleware", "Starlette BaseHTTPMiddleware", "Extracts X-Tenant-ID/Name/Role headers, injects into request state")
-            Container(rate_limiter, "Rate Limiter", "Sliding-window token bucket", "Per-tenant 100 req/60s with Retry-After headers")
-            Container(req_logger, "Request Logger", "Structured logging", "Method, path, status, duration_ms, tenant_id per request")
-        }
-
-        Container_Boundary(modules, "Core Modules") {
-            Container(parser, "Parsing Engine", "regex + docx/pdf/yaml/json parsers", "Extracts endpoints, fields, auth, services, SLA from documents")
-            Container(registry, "Integration Registry", "SQLAlchemy async, selectinload", "Manages adapter catalog with versioned schemas and endpoints")
-            Container(config_engine, "Config Engine", "rapidfuzz, synonym dictionaries", "Field mapping (fuzzy + semantic), config generation, diff analysis")
-            Container(simulator, "Simulation Framework", "MockAPIServer + IntegrationSimulator", "7-step validation: structure, mappings, endpoints, auth, hooks, errors, retry")
-            Container(lifecycle, "Lifecycle Manager", "Finite state machine", "Enforces draft->configured->validating->testing->active->deprecated transitions")
-        }
-
-        Container_Boundary(security_boundary, "Security Layer") {
-            Container(credential_vault, "Credential Vault", "Fernet symmetric encryption (SHA-256 derived key)", "Encrypts API keys, webhook secrets, auth credentials at rest")
-            Container(pii_masker, "PII Masker", "Regex pattern matching", "Masks Aadhaar, PAN, phone, email, account numbers in logs")
-            Container(jwt_engine, "JWT Engine", "PyJWT, HS256", "Token creation and validation with configurable expiry")
-            Container(audit_logger, "Audit Logger", "Immutable append-only log", "Tracks all mutations: create, update, delete, deploy, rollback")
-        }
-
-        Container_Boundary(data_boundary, "Data Layer") {
-            ContainerDb(db, "Database", "SQLite (dev) / PostgreSQL (prod)", "11 tables with UUID PKs, tenant isolation, timestamp tracking")
-        }
-    }
-
-    Rel(user, react_app, "Manages integrations", "HTTPS")
-    Rel(auditor, react_app, "Reviews audit logs", "HTTPS")
-    Rel(react_app, fastapi, "API calls", "HTTP/JSON, SSE")
-    Rel(fastapi, tenant_mw, "Every request passes through")
-    Rel(tenant_mw, rate_limiter, "After tenant extraction")
-    Rel(rate_limiter, req_logger, "If not rate-limited")
-
-    Rel(fastapi, parser, "POST /documents/upload")
-    Rel(fastapi, registry, "GET/POST /adapters")
-    Rel(fastapi, config_engine, "POST /configurations/generate")
-    Rel(fastapi, simulator, "POST /simulations/run")
-    Rel(fastapi, lifecycle, "POST /configurations/{id}/transition")
-    Rel(fastapi, audit_logger, "All mutations")
-
-    Rel(parser, brd_docs, "Reads & extracts")
-    Rel(simulator, cibil, "Mock simulation")
-    Rel(simulator, ekyc, "Mock simulation")
-    Rel(simulator, gst, "Mock simulation")
-    Rel(simulator, payment, "Mock simulation")
-    Rel(simulator, fraud, "Mock simulation")
-    Rel(simulator, sms, "Mock simulation")
-
-    Rel(config_engine, db, "CRUD configs")
-    Rel(registry, db, "CRUD adapters")
-    Rel(audit_logger, db, "Append-only writes")
-    Rel(credential_vault, db, "Encrypted storage")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
+```
+                          +---------------------+
+                          |   React Frontend    |
+                          |  (Vite + React 18)  |
+                          |  Port 5173          |
+                          +----------+----------+
+                                     |
+                            Axios / REST API
+                                     |
+                          +----------v----------+
+                          |   FastAPI Backend    |
+                          |   (Uvicorn, async)   |
+                          |   Port 8000          |
+                          +----------+----------+
+                                     |
+         +---------------------------+---------------------------+
+         |                           |                           |
++--------v--------+     +----------v---------+     +-----------v----------+
+|  Middleware      |     |  Service Layer     |     |  Event System        |
+|  Stack           |     |                    |     |  (events.py)         |
+|  - CORS          |     |  - DocumentParser  |     |  - Webhook delivery  |
+|  - TenantAuth    |     |  - ConfigGenerator |     |  - Async listeners   |
+|  - RateLimiter   |     |  - FieldMapper     |     +----------------------+
+|  - SecurityHdrs  |     |  - Simulator       |
+|  - Deprecation   |     |  - LLM Client      |
+|  - RequestLog    |     |  - SearchService   |
++-----------------+     +----------+---------+
+                                    |
+                          +---------v---------+
+                          |  SQLAlchemy Async  |
+                          |  (aiosqlite)       |
+                          +---------+---------+
+                                    |
+                          +---------v---------+
+                          |  SQLite Database   |
+                          |  (finspark.db)     |
+                          +-------------------+
 ```
 
-### Component Summary
+### Core Capabilities
 
-| Layer | Component | Technology | Responsibility |
-|-------|-----------|------------|----------------|
-| Frontend | React Dashboard | React 18, TypeScript, Vite, Recharts | Metrics visualization, adapter browsing, config management |
-| API | FastAPI Application | FastAPI, Pydantic v2, Uvicorn | REST endpoints, OpenAPI docs, SSE streaming |
-| Middleware | Tenant Middleware | Starlette | Multi-tenant context injection via X-Tenant-ID header |
-| Middleware | Rate Limiter | In-memory sliding window | 100 requests/60s per tenant, 429 with Retry-After |
-| Middleware | Request Logger | Python logging | Structured request/response metrics |
-| Module | Parsing Engine | python-docx, pypdf, PyYAML | Document parsing and entity extraction |
-| Module | Integration Registry | SQLAlchemy async | Adapter catalog with versioned schemas |
-| Module | Config Engine | rapidfuzz | Fuzzy field mapping, config generation, diff engine |
-| Module | Simulation Framework | MockAPIServer | 7-step mock integration testing |
-| Module | Lifecycle Manager | FSM dataclass | State transition enforcement with audit trail |
-| Security | Credential Vault | cryptography.Fernet | Symmetric encryption for secrets at rest |
-| Security | PII Masker | Regex | Aadhaar, PAN, phone, email, account masking |
-| Security | JWT Engine | PyJWT | HS256 token management |
-| Security | Audit Logger | SQLAlchemy | Immutable audit trail for all mutations |
-| Data | Database | SQLite/PostgreSQL | 11 tables, UUID PKs, async sessions |
+| Capability | Description |
+|---|---|
+| Document Parsing | Extract integration requirements from DOCX, PDF, YAML, JSON (OpenAPI) |
+| Config Generation | Rule-based field mapping with optional LLM augmentation (Gemini) |
+| Adapter Registry | 8 pre-built adapters for Indian fintech services with versioning |
+| Simulation | Mock-based integration testing with step-by-step results |
+| Lifecycle Management | State machine governing config status (draft -> active) |
+| Webhook Events | Event-driven notifications with HMAC-signed delivery |
+| Multi-Tenant | Row-level tenant isolation with JWT auth in production |
+| Audit Trail | Immutable logging of all configuration changes |
 
 ---
 
-## 2. Data Flow
+## 2. Backend Architecture
 
-### End-to-End Integration Configuration Flow
+### 2.1 FastAPI App Structure
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as Platform Engineer
-    participant FE as React Dashboard
-    participant API as FastAPI Gateway
-    participant TM as Tenant Middleware
-    participant RL as Rate Limiter
-    participant PE as Parsing Engine
-    participant AR as Adapter Registry
-    participant CE as Config Engine
-    participant FM as Field Mapper
-    participant SF as Simulation Framework
-    participant MS as Mock API Server
-    participant LC as Lifecycle Manager
-    participant AL as Audit Logger
-    participant CV as Credential Vault
-    participant DB as Database
+**Entry point:** `src/finspark/main.py`
 
-    rect rgb(30, 41, 59)
-        Note over U,DB: Phase 1 - Document Upload & Parsing
-        U->>FE: Upload BRD/SOW document
-        FE->>API: POST /api/v1/documents/upload<br/>(multipart/form-data)
-        API->>TM: Extract tenant from X-Tenant-ID header
-        TM->>RL: Check rate limit (100 req/60s)
-        RL-->>API: Allowed
-        API->>PE: parse(file_path, doc_type)
-        PE->>PE: Detect format (docx/pdf/yaml/json)
+The application uses FastAPI's `lifespan` context manager for startup/shutdown:
 
-        alt DOCX/PDF Document
-            PE->>PE: Extract full text from paragraphs & tables
-            PE->>PE: Regex extraction: endpoints, fields, auth, services
-            PE->>PE: Extract sections, security reqs, SLA reqs
-        else OpenAPI YAML/JSON
-            PE->>PE: Parse paths -> endpoints
-            PE->>PE: Parse components/schemas -> fields
-            PE->>PE: Parse securitySchemes -> auth requirements
-        end
+**Startup sequence:**
+1. Initialize database (Alembic migrations in production, `create_all` in debug)
+2. Seed 8 pre-built adapters with versioned schemas
+3. Create upload directory
+4. Register event handlers for webhook delivery
 
-        PE-->>API: ParsedDocumentResult {endpoints, fields, auth, services, confidence}
-        API->>DB: INSERT document (status=parsed)
-        API->>AL: log(upload_document, document, doc.id)
-        AL->>DB: INSERT audit_log
-        API-->>FE: DocumentUploadResponse {id, status, filename}
-    end
+**Shutdown:**
+1. Close the shared LLM client connection pool (if created)
 
-    rect rgb(30, 50, 40)
-        Note over U,DB: Phase 2 - Adapter Matching
-        U->>FE: Browse adapter catalog
-        FE->>API: GET /api/v1/adapters/?category=bureau
-        API->>AR: list_adapters(category)
-        AR->>DB: SELECT adapters JOIN adapter_versions
-        DB-->>AR: Adapter[] with versions
-        AR-->>API: Adapters with endpoints, schemas, auth types
-        API-->>FE: AdapterListResponse {adapters, categories}
-        U->>FE: Select adapter version (e.g., CIBIL v2)
-    end
-
-    rect rgb(50, 30, 40)
-        Note over U,DB: Phase 3 - Configuration Generation
-        U->>FE: Generate config (document + adapter version)
-        FE->>API: POST /api/v1/configurations/generate<br/>{document_id, adapter_version_id, name}
-        API->>DB: Fetch parsed document + adapter version
-        API->>CE: generate(parsed_result, adapter_version)
-        CE->>FM: map_fields(source_fields, target_fields)
-
-        loop For each source field
-            FM->>FM: Strategy 1: Exact synonym match<br/>(FIELD_SYNONYMS dictionary)
-            FM->>FM: Strategy 2: Fuzzy match<br/>(rapidfuzz token_sort_ratio >= 60%)
-            FM->>FM: Strategy 3: Partial token overlap<br/>(Jaccard similarity >= 0.6)
-        end
-
-        FM-->>CE: FieldMapping[] with confidence scores
-        CE->>CE: Build endpoint configs
-        CE->>CE: Generate transformation rules
-        CE->>CE: Attach default hooks (audit_logger, pii_masker, schema_validator)
-        CE->>CE: Set retry policy {max_retries: 3, backoff: 2}
-        CE-->>API: Complete config JSON
-
-        API->>DB: INSERT configuration (status=configured)
-        API->>DB: INSERT configuration_history (version=1)
-        API->>AL: log(generate_config, configuration, config.id)
-        API-->>FE: ConfigurationResponse {id, field_mappings, status}
-    end
-
-    rect rgb(40, 30, 60)
-        Note over U,DB: Phase 4 - Simulation & Testing
-        U->>FE: Run simulation
-        FE->>API: POST /api/v1/simulations/run<br/>{configuration_id, test_type: "full"}
-        API->>DB: Fetch configuration
-        API->>SF: run_simulation(full_config, "full")
-
-        SF->>SF: Step 1: Validate config structure<br/>(required keys: adapter_name, version, base_url, auth, endpoints, field_mappings)
-        SF->>SF: Step 2: Validate field mappings<br/>(coverage >= 70%, low confidence <= 30%)
-
-        loop For each enabled endpoint
-            SF->>MS: generate_response(endpoint, request_payload)
-            MS->>MS: Generate mock data from Indian fintech domain<br/>(PAN, Aadhaar, GSTIN, IFSC, etc.)
-            MS-->>SF: Mock API response
-            SF->>SF: Step 3+: Validate endpoint response
-        end
-
-        SF->>SF: Step N-2: Validate auth configuration
-        SF->>SF: Step N-1: Validate hooks (pre_request, post_response, on_error, on_timeout)
-        SF->>SF: Step N: Test error handling (retry policy, timeout, error hooks)
-        SF->>SF: Step N+1: Test retry logic (max_retries 1-5, backoff, status codes)
-
-        SF-->>API: SimulationStepResult[] {step_name, status, duration_ms, confidence_score}
-        API->>DB: INSERT simulation + simulation_steps
-        API->>DB: UPDATE configuration.status = "testing" (if all passed)
-        API->>AL: log(run_simulation, simulation, sim.id)
-        API-->>FE: SimulationResponse {passed: N, failed: M, steps}
-    end
-
-    rect rgb(30, 45, 50)
-        Note over U,DB: Phase 5 - Deploy (Lifecycle Transition)
-        U->>FE: Promote to Active
-        FE->>API: POST /api/v1/configurations/{id}/transition<br/>{target_state: "active"}
-        API->>LC: transition(TESTING -> ACTIVE)
-        LC->>LC: Validate transition allowed (FSM check)
-        LC-->>API: AuditEntry {from_state, to_state, timestamp}
-        API->>DB: UPDATE configuration.status = "active"
-        API->>AL: log(deploy, configuration, config.id)
-        API-->>FE: TransitionResponse {previous_state, new_state}
-    end
+**Route registration:**
+```
+/health                    -> health.router        (no prefix)
+/api/v1/documents/...      -> documents.router
+/api/v1/adapters/...       -> adapters.router
+/api/v1/configurations/... -> configurations.router
+/api/v1/simulations/...    -> simulations.router
+/api/v1/audit/...          -> audit.router
+/api/v1/search/...         -> search.router
+/api/v1/webhooks/...       -> webhooks.router
+/api/v1/analytics/...      -> analytics.router     (no prefix)
+/metrics                   -> inline handler
 ```
 
-### SSE Streaming Flow (Real-Time Simulation)
+### 2.2 Middleware Stack
 
-```mermaid
-sequenceDiagram
-    participant FE as React Dashboard
-    participant API as FastAPI
-    participant SF as Simulator
+Middleware executes in reverse registration order (last added = first executed). The effective execution order for an inbound request:
 
-    FE->>API: GET /api/v1/simulations/{id}/stream
-    API->>SF: run_simulation_stream(config)
-
-    loop For each test step
-        SF-->>API: SimulationStepResult
-        API-->>FE: event: step\ndata: {step_name, status, duration_ms}
-    end
-
-    API-->>FE: event: done\ndata: {total_steps: N}
 ```
+Request
+  -> CORSMiddleware          (CORS headers, preflight handling)
+  -> TrustedHostMiddleware   (production only, validates Host header)
+  -> TenantMiddleware        (JWT auth in production, X-Tenant-* headers in debug)
+  -> RateLimiterMiddleware   (per-tenant sliding window, 100 req/60s default)
+  -> DeprecationHeaderMiddleware (Sunset/Deprecation headers for deprecated versions)
+  -> RequestLoggingMiddleware (timing, structured log output)
+  -> SecurityHeadersMiddleware (X-Content-Type-Options, CSP, X-Frame-Options)
+  -> Route handler
+```
+
+**TenantMiddleware** (`core/middleware.py`):
+- Production mode: requires `Authorization: Bearer <JWT>` with `tenant_id`, `tenant_name`, `role` claims
+- Debug mode: reads from `X-Tenant-ID`, `X-Tenant-Name`, `X-Tenant-Role` headers
+- Auth bypass paths: `/health`, `/docs`, `/redoc`, `/openapi.json`, `/metrics`
+
+**RateLimiterMiddleware** (`core/rate_limiter.py`):
+- Per-tenant sliding window counter using `OrderedDict`
+- Bounded tenant set (max 10,000 entries) with LRU eviction
+- Returns `429` with `Retry-After` header when limit exceeded
+- Also collects in-memory metrics (request counts per endpoint, avg response time)
+
+**DeprecationHeaderMiddleware** (`core/middleware.py`):
+- Matches URL pattern `/api/v1/adapters/{id}/versions/{version}/...`
+- Adds `Sunset`, `Deprecation: true`, and `Link` (successor-version) headers
+
+### 2.3 Database Layer
+
+**Engine:** SQLAlchemy 2.0 async with `aiosqlite` (SQLite). Configurable via `FINSPARK_DATABASE_URL`.
+
+**Session management** (`core/database.py`):
+- `async_session_factory`: `async_sessionmaker` with `expire_on_commit=False`
+- `get_db()`: async generator dependency that auto-commits on success, rolls back on exception
+- `init_db()`: imports all models and runs `Base.metadata.create_all` for development
+
+**Base mixins** (`models/base.py`):
+- `UUIDMixin`: UUID v4 primary key as `String(36)`
+- `TenantMixin`: `tenant_id` column with index for row-level isolation
+- `TimestampMixin`: `created_at` and `updated_at` with `server_default=func.now()`
+
+### 2.4 API Routes
+
+All API routes follow the same pattern:
+
+```
+Request -> Middleware (tenant context injected into request.state)
+        -> Route handler (receives dependencies via FastAPI Depends)
+        -> Service layer (business logic)
+        -> Database (SQLAlchemy async queries)
+        -> APIResponse[T] wrapper returned
+```
+
+**Dependency injection** (`api/dependencies.py`):
+- `get_tenant_context(request)`: extracts `TenantContext` from `request.state`
+- `require_role(*roles)`: factory returning a `Depends` that enforces RBAC
+- Service factories: `get_document_parser()`, `get_config_generator()`, `get_simulator()`, `get_diff_engine()`, `get_rollback_manager()`, `get_adapter_registry(db)`, `get_audit_service(db)`
+
+**Standard response wrapper:**
+```python
+class APIResponse(BaseModel, Generic[T]):
+    success: bool = True
+    data: T | None = None
+    message: str = ""
+    errors: list[str] = []
+```
+
+**Endpoint inventory (34 endpoints):**
+
+| Route Group | Endpoints | Auth |
+|---|---|---|
+| Health | `GET /health` | None |
+| Documents | `POST /upload`, `GET /`, `GET /{id}`, `DELETE /{id}` | admin/editor for writes |
+| Adapters | `GET /`, `GET /{id}`, `GET /{id}/versions/{v}/deprecation`, `GET /{id}/match` | viewer |
+| Configurations | `POST /generate`, `GET /`, `GET /{id}`, `PATCH /{id}`, `POST /{id}/validate`, `POST /{id}/transition`, `GET /{id}/diff/{id}`, `GET /templates`, `GET /summary`, `GET /{id}/history`, `POST /{id}/rollback`, `GET /{id}/history/compare`, `GET /{id}/export`, `POST /batch-validate`, `POST /batch-simulate` | admin/editor for mutations |
+| Simulations | `POST /run`, `GET /`, `GET /{id}`, `GET /{id}/stream` | admin/editor for run |
+| Audit | `GET /` (paginated with filters) | viewer |
+| Search | `GET /?q=...` | viewer |
+| Webhooks | `POST /`, `GET /`, `DELETE /{id}`, `POST /{id}/test` | admin for mutations |
+| Analytics | `GET /dashboard`, `GET /health` | viewer |
+| Metrics | `GET /metrics` | None |
+
+### 2.5 Service Layer
+
+#### DocumentParser (`services/parsing/document_parser.py`)
+
+Parses uploaded files and extracts structured integration requirements:
+
+- **DOCX**: Uses `python-docx` to extract paragraphs and table data
+- **PDF**: Uses `pypdf` to extract text from all pages
+- **YAML/JSON**: Detects OpenAPI/Swagger specs; resolves `$ref` references against the spec
+- **Text extraction**: Regex-based extraction of endpoints, fields, auth requirements, services, sections, security/SLA requirements
+
+Returns `ParsedDocumentResult` containing: `endpoints`, `fields`, `auth_requirements`, `services_identified`, `sections`, `security_requirements`, `sla_requirements`, `confidence_score`.
+
+#### FieldMapper + ConfigGenerator (`services/config_engine/field_mapper.py`)
+
+**FieldMapper** maps source document fields to target adapter fields using three strategies:
+
+1. **Exact synonym match**: Lookup table of 17 canonical Indian fintech field groups (PAN, Aadhaar, GSTIN, mobile, etc.) with 100+ synonyms
+2. **Fuzzy string matching**: `rapidfuzz` library with `token_sort_ratio` scorer, threshold 0.6
+3. **Partial token matching**: Jaccard similarity on underscore-split tokens
+
+**ConfigGenerator** orchestrates the full config generation:
+- Separates request fields from response fields using `source_section` metadata
+- Maps both against adapter request/response schemas
+- Generates default hooks (audit logger, PII masker, schema validator)
+- Includes retry policy, timeout, and metadata with unmapped field tracking
+
+#### LLM Client (`services/llm/client.py`)
+
+Async Gemini REST API client using `httpx` (no SDK dependency):
+- Endpoint: `generativelanguage.googleapis.com/v1beta`
+- Supports `generate()` for text and `generate_json()` for structured JSON output
+- API key passed via `x-goog-api-key` header
+- Module-level shared client with lazy initialization; closed during app shutdown
+
+**Config generation pipeline** (`services/llm/config_generator.py`):
+- System instruction establishes FinSpark's role as an integration configuration engine
+- Prompt template includes adapter info, parsed document content, and output schema
+- Temperature 0.1 for deterministic output
+
+**Hybrid generation** (in `routes/configurations.py`):
+1. If AI enabled + Gemini key present: attempt LLM generation
+2. Always augment with rule-based field mapper for confidence scores
+3. Rule-based confidence overrides LLM self-assessment
+4. Fallback to pure rule-based if LLM fails
+
+#### ConfigDiffEngine (`services/config_engine/diff_engine.py`)
+
+Recursive structural diff between two configuration dicts:
+- **Dict diffing**: key-by-key comparison with path tracking
+- **List diffing**: Identity-based matching using `source_field`, `path`, `name`, `id` keys; falls back to positional matching for primitive lists
+- **Breaking change detection**: Changes to `auth.type`, `base_url`, `version`, `endpoints` are flagged as breaking
+
+#### RollbackManager (`services/config_engine/rollback.py`)
+
+Version history and rollback for configurations:
+- `snapshot()`: creates a `ConfigurationHistory` entry with serialized state
+- `rollback()`: restores config to a target version, creates pre-rollback snapshot, bumps version number
+- `list_versions()`: returns full version history
+- `compare_versions()`: diffs two historical versions using `ConfigDiffEngine`
+
+#### ConfigValidator (`services/config_engine/validator.py`)
+
+Rule-based validation producing a `ValidationReport`:
+- `required_fields_mapped`: checks top-level keys and field mapping coverage
+- `auth_configured`: validates auth type against known types
+- `endpoints_reachable`: validates path strings and HTTP methods
+- `hooks_valid`: validates hook types and handler presence
+- `retry_policy_valid`: bounds checking on max_retries and backoff_factor
+- `timeout_reasonable`: validates timeout within 100ms-120,000ms range
+
+#### IntegrationSimulator (`services/simulation/simulator.py`)
+
+Mock-based integration testing framework:
+
+**Test steps (full run):**
+1. Config structure validation
+2. Field mapping validation (coverage >= 30%, low confidence <= 50%)
+3. Per-endpoint mock testing (generates realistic responses per adapter)
+4. Auth config validation
+5. Hooks validation
+6. Error handling validation
+7. Retry logic validation
+
+**Execution modes:**
+- `run_simulation()`: synchronous, returns all steps
+- `run_simulation_stream()`: generator yielding steps one at a time
+- `run_simulation_stream_async()`: async generator with per-step timeout (30s default)
+- `run_parallel_version_test()`: tests same request against two API versions
+
+**MockAPIServer** (`services/simulation/mock_responses.py`):
+- 8 adapter-specific mock generators producing deterministic, hash-seeded responses
+- Covers: CIBIL credit scores/reports, Aadhaar eKYC, GST verification, Payment Gateway, Fraud Detection, SMS/Email Gateway, Account Aggregator
+- Routes by adapter display name first, then by base_url pattern matching
+
+#### IntegrationLifecycle (`services/lifecycle.py`)
+
+State machine with defined transition graph:
+
+```
+draft -> configured -> validating -> testing -> active -> deprecated -> draft
+                ^          |            |                      ^
+                +----------+            +--- configured        |
+                                                               |
+                                        active -> rollback -> configured/draft
+```
+
+Maintains an in-memory audit trail of transitions. Raises `InvalidTransitionError` for illegal state changes.
+
+#### IntegrationSearch (`services/search.py`)
+
+Keyword-based natural language search across three entity types:
+
+- **Query parsing**: tokenizes input, maps keywords to categories (kyc, bureau, payment...), statuses, auth types
+- **Adapter scoring**: category match (10pts), token-in-name (3pts), token-in-description (1pt), auth type match (5pts)
+- **Configuration scoring**: status match (10pts), token-in-name (3pts)
+- **Simulation scoring**: status match (10pts), "simulation" keyword boost (5pts)
+- Results sorted by score within each group
+
+#### WebhookDelivery (`services/webhook_delivery.py`)
+
+Event-driven webhook delivery system:
+- Retrieves all active webhooks for the tenant matching the event type (or `*` wildcard)
+- SSRF protection via `is_safe_url()` check before delivery
+- HMAC-SHA256 signature using decrypted webhook secret in `X-Webhook-Signature` header
+- 3 delivery attempts with exponential backoff (2s, 4s)
+- Records `WebhookDelivery` entries with status, response code, attempt count
+
+#### AnalyticsService (`services/analytics.py`)
+
+Dashboard metrics aggregated per tenant:
+- Configuration stats: total, by_status breakdown, active/draft counts
+- Simulation stats: total, pass rate, average duration
+- Document stats: total, by_status
+- Audit entry count
+- Health score (0-100): weighted composite of config activity, active configs, simulation pass rate
+
+### 2.6 Security
+
+#### JWT Authentication
+
+- **Production mode**: `TenantMiddleware` requires `Authorization: Bearer <JWT>`
+- Token payload contains: `tenant_id`, `tenant_name`, `role`, `exp`
+- Signed with `HS256` using `FINSPARK_SECRET_KEY`
+- Expiry configurable via `FINSPARK_JWT_EXPIRY_MINUTES` (default: 60)
+- `create_tenant_token()` helper for test/dev tooling
+
+#### Tenant Isolation
+
+- All tenant-scoped models include `TenantMixin` adding indexed `tenant_id` column
+- Every query filters by `tenant_id` from the authenticated context
+- Adapters are global (not tenant-scoped); configurations, documents, simulations, webhooks, and audit logs are tenant-scoped
+
+#### Role-Based Access Control
+
+Three roles with the `require_role()` dependency:
+
+| Role | Permissions |
+|---|---|
+| `admin` | Full access: create, read, update, delete, deploy, rollback |
+| `editor` | Create and modify: upload docs, generate configs, run simulations |
+| `viewer` | Read-only: list and view all resources |
+
+#### PII Masking
+
+- `core/security.py`: regex patterns for Aadhaar, PAN, phone, email, account numbers
+- `mask_pii()` replaces matches with masked values (e.g., `XXXX-XXXX-XXXX`)
+- `PIIMaskingFilter` (`core/logging_filter.py`): logging filter applied globally, masks PII in log messages and arguments before emission
+
+#### Encryption
+
+- Fernet symmetric encryption using key derived from `FINSPARK_ENCRYPTION_KEY` via SHA-256
+- Used for webhook secrets (`encrypt_value()`/`decrypt_value()`)
+- Production validator rejects insecure default keys and keys shorter than 32 characters
+
+#### SSRF Protection
+
+`core/url_validator.py`: validates webhook URLs against blocked networks:
+- `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `::1/128`
+- DNS resolution check before HTTP delivery
+
+#### Security Headers
+
+Every response includes:
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `X-XSS-Protection: 1; mode=block`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Content-Security-Policy: default-src 'self'; ...`
+
+### 2.7 Event System
+
+`core/events.py`: simple pub/sub event bus:
+
+```python
+events.on(event_type, handler)   # Register handler
+await events.emit(event_type, data)  # Emit to all handlers (sync or async)
+events.clear()                   # Clear all handlers (testing)
+```
+
+**Standard event types:**
+- `config.created`, `config.updated`, `config.deployed`, `config.rolled_back`
+- `simulation.started`, `simulation.completed`
+- `document.parsed`
+- `adapter.deprecated`
+
+Events are wired to `deliver_event()` during app lifespan startup. Handlers fire via `asyncio.create_task()` for non-blocking delivery.
 
 ---
 
-## 3. Database Schema
+## 3. Frontend Architecture
 
-### Entity-Relationship Diagram
+### 3.1 React App Structure
 
-```mermaid
-erDiagram
-    tenants {
-        string id PK "UUID v4"
-        string name "NOT NULL, VARCHAR(255)"
-        string slug "UNIQUE, VARCHAR(100)"
-        text description "nullable"
-        boolean is_active "DEFAULT true"
-        text settings "JSON - tenant preferences"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
+**Stack:** React 18, TypeScript, Vite, Tailwind CSS v4, React Router v6, TanStack React Query, Recharts, Lucide icons, Axios.
 
-    documents {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string filename "NOT NULL, VARCHAR(500)"
-        string file_type "NOT NULL (docx|pdf|yaml|json)"
-        integer file_size "DEFAULT 0"
-        string doc_type "NOT NULL (brd|sow|api_spec|other)"
-        string status "(uploaded|parsing|parsed|failed)"
-        text raw_text "nullable, first 5000 chars"
-        text parsed_result "JSON - ParsedDocumentResult"
-        text error_message "nullable"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
+**Entry point:** `frontend/src/main.tsx` -> `App.tsx`
 
-    adapters {
-        string id PK "UUID v4"
-        string name "NOT NULL, VARCHAR(255)"
-        string category "NOT NULL (bureau|kyc|gst|payment|fraud|notification)"
-        text description "nullable"
-        boolean is_active "DEFAULT true"
-        string icon "nullable, VARCHAR(50)"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    adapter_versions {
-        string id PK "UUID v4"
-        string adapter_id FK "NOT NULL -> adapters.id"
-        string version "NOT NULL, VARCHAR(20)"
-        integer version_order "DEFAULT 0"
-        string status "(active|deprecated|beta)"
-        string base_url "nullable, VARCHAR(500)"
-        string auth_type "(api_key|oauth2|certificate|api_key_certificate)"
-        text request_schema "JSON Schema"
-        text response_schema "JSON Schema"
-        text endpoints "JSON array of endpoint objects"
-        text config_template "JSON default config"
-        text changelog "nullable"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    configurations {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string name "NOT NULL, VARCHAR(255)"
-        string adapter_version_id FK "NOT NULL -> adapter_versions.id"
-        string document_id FK "nullable -> documents.id"
-        string status "(draft|configured|validating|testing|active|deprecated|rollback)"
-        integer version "DEFAULT 1"
-        text field_mappings "JSON array of FieldMapping"
-        text transformation_rules "JSON array of TransformationRule"
-        text hooks "JSON array of HookConfig"
-        text auth_config "JSON, Fernet encrypted"
-        text full_config "JSON - complete configuration"
-        text notes "nullable"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    configuration_history {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string configuration_id FK "NOT NULL -> configurations.id"
-        integer version "NOT NULL"
-        string change_type "(created|updated|status_change)"
-        text previous_value "JSON nullable"
-        text new_value "JSON nullable"
-        string changed_by "nullable, VARCHAR(255)"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    simulations {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string configuration_id FK "NOT NULL -> configurations.id"
-        string status "(pending|running|passed|failed|error)"
-        string test_type "(full|smoke|schema_only|parallel_version)"
-        integer total_tests "DEFAULT 0"
-        integer passed_tests "DEFAULT 0"
-        integer failed_tests "DEFAULT 0"
-        integer duration_ms "nullable"
-        text results "JSON array of SimulationStepResult"
-        text error_log "nullable"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    simulation_steps {
-        string id PK "UUID v4"
-        string simulation_id FK "NOT NULL -> simulations.id"
-        string step_name "NOT NULL, VARCHAR(255)"
-        integer step_order "DEFAULT 0"
-        string status "(pending|passed|failed|skipped|error)"
-        text request_payload "JSON"
-        text expected_response "JSON"
-        text actual_response "JSON"
-        integer duration_ms "nullable"
-        float confidence_score "nullable, 0.0-1.0"
-        text error_message "nullable"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    audit_logs {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string actor "NOT NULL, VARCHAR(255)"
-        string action "NOT NULL (create|update|delete|deploy|rollback)"
-        string resource_type "NOT NULL (configuration|adapter|simulation|document)"
-        string resource_id "NOT NULL, VARCHAR(36)"
-        text details "JSON nullable"
-        string ip_address "nullable, VARCHAR(45)"
-        string user_agent "nullable, VARCHAR(500)"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    webhooks {
-        string id PK "UUID v4"
-        string tenant_id FK "INDEX, NOT NULL"
-        string url "NOT NULL, VARCHAR(2048)"
-        string secret "NOT NULL, Fernet encrypted"
-        text events "JSON list of event types"
-        boolean is_active "DEFAULT true"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    webhook_deliveries {
-        string id PK "UUID v4"
-        string webhook_id FK "NOT NULL -> webhooks.id, ON DELETE CASCADE"
-        string event_type "NOT NULL, VARCHAR(100)"
-        text payload "JSON, NOT NULL"
-        string status "(pending|delivered|failed)"
-        integer response_code "nullable"
-        integer attempts "DEFAULT 0"
-        datetime created_at "server_default now()"
-        datetime updated_at "onupdate now()"
-    }
-
-    adapters ||--o{ adapter_versions : "has versions"
-    configurations }o--|| adapter_versions : "uses"
-    configurations }o--o| documents : "generated from"
-    configurations ||--o{ configuration_history : "has history"
-    configurations ||--o{ simulations : "tested by"
-    simulations ||--o{ simulation_steps : "contains steps"
-    webhooks ||--o{ webhook_deliveries : "delivers to"
+**Component hierarchy:**
+```
+<ErrorBoundary>
+  <QueryClientProvider>
+    <ToastProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>     -- sidebar + header + <Outlet>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/adapters" ... />
+            <Route path="/documents" ... />
+            <Route path="/configurations" ... />
+            <Route path="/simulations" ... />
+            <Route path="/audit" ... />
+            <Route path="/search" ... />
+            <Route path="/webhooks" ... />
+          </Route>
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </BrowserRouter>
+    </ToastProvider>
+  </QueryClientProvider>
+</ErrorBoundary>
 ```
 
-### Table Count: 11 Tables
+**Error boundaries:**
+- `ErrorBoundary`: top-level catch-all
+- `PageErrorBoundary`: wraps each page route for isolated error recovery
 
-| Table | Row-Level Tenant Isolation | Purpose |
-|-------|:-:|---------|
-| `tenants` | -- | Tenant registry and settings |
-| `documents` | Yes | Uploaded BRD/SOW/API spec files |
-| `adapters` | -- | Pre-built adapter catalog (global) |
-| `adapter_versions` | -- | Versioned adapter schemas (global) |
-| `configurations` | Yes | Generated integration configs per tenant |
-| `configuration_history` | Yes | Version history of config changes |
-| `simulations` | Yes | Simulation/test run records |
-| `simulation_steps` | -- | Individual test steps within simulations |
-| `audit_logs` | Yes | Immutable audit trail |
-| `webhooks` | Yes | Registered webhook endpoints |
-| `webhook_deliveries` | -- | Webhook delivery attempt records |
+**Lazy loading:** Dashboard page is lazy-loaded with `Suspense` fallback.
+
+### 3.2 Design System
+
+**Palette:** Deep space background (`#08090e`) with glassmorphism surfaces:
+
+| Token | Value | Usage |
+|---|---|---|
+| `--color-bg-base` | `#08090e` | Page background |
+| `--color-glass` | `rgba(255,255,255,0.05)` | Card backgrounds |
+| `--color-brand` | `#38e5cd` | Primary teal/cyan |
+| `--color-accent` | `#fbbf24` | Warm amber highlights |
+| `--color-text-primary` | `#f1f5f9` | Headings, body text |
+| `--color-text-secondary` | `#94a3b8` | Labels, secondary text |
+| `--color-border` | `rgba(255,255,255,0.06)` | Card/section borders |
+
+**Typography:** Plus Jakarta Sans (body), JetBrains Mono (code/data).
+
+**Glass card utility:** `card` class applies border-radius, border, glass background, and backdrop blur.
+
+**Layout:** 220px sidebar with grouped navigation (Core / Integrations / Governance), 56px top header bar with system health indicator.
+
+### 3.3 Data Flow
+
+**API layer** (`lib/api.ts`):
+- Axios instance with 30s timeout
+- Default headers: `X-Tenant-ID: default`, `X-Tenant-Role: admin`
+- Error interceptor with timeout and status logging
+- Typed API modules: `healthApi`, `adaptersApi`, `documentsApi`, `configurationsApi`, `simulationsApi`, `auditApi`, `analyticsApi`, `searchApi`, `webhooksApi`
+
+**React Query configuration:**
+```typescript
+{
+  retry: 1,
+  refetchOnWindowFocus: false,
+  staleTime: 30_000   // 30 second cache
+}
+```
+
+**Type system** (`types/index.ts`):
+- TypeScript interfaces matching all Pydantic response schemas
+- `APIResponse<T>`, `PaginatedResponse<T>` generics
+- Entity types: `Adapter`, `Document`, `Configuration`, `Simulation`, `AuditEntry`
+- Sub-types: `FieldMapping`, `SimulationStepResult`, `ConfigDiffItem`, `SearchResult`
+
+### 3.4 Page Components
+
+| Page | Path | Key Features |
+|---|---|---|
+| **Dashboard** | `/` | Metric cards (configs, docs, simulations, health), area chart (weekly activity), bar chart (throughput), config summary with status breakdown, adapter category pie chart |
+| **Documents** | `/documents` | Drag-and-drop upload (DOCX, PDF, YAML, JSON), document list with status badges, 5-tab detail modal (overview, fields, endpoints, auth, raw), delete with confirmation |
+| **Search** | `/search` | Debounced natural language search, grouped results (adapters, configurations, simulations), relevance score bars |
+| **Adapters** | `/adapters` | 8 adapter cards with icons, category filter pills (bureau, kyc, gst, payment, fraud, notification, open_banking), detail modal with version list, deprecation info |
+| **Configurations** | `/configurations` | Generate config (document + adapter version dropdowns), editable field mappings with confidence scores, lifecycle stepper (draft -> active), export (JSON/YAML), version history, rollback, validate |
+| **Webhooks** | `/webhooks` | Create webhook (URL, events, secret), list active webhooks, delete, test delivery with response display |
+| **Simulations** | `/simulations` | Run simulation from configuration, step-by-step results with pass/fail indicators, request/response payload inspection |
+| **Audit Log** | `/audit` | Filter by action type and resource type, paginated results, expandable detail rows |
+
+**Shared components:**
+- `Pagination`: page navigation with page size control
+- `EmptyState`: placeholder for empty data states
+- `Skeleton`: loading shimmer placeholders
+- `Toast`: notification system with provider context
 
 ---
 
-## 4. Integration Lifecycle State Machine
+## 4. Key Workflows
 
-```mermaid
-stateDiagram-v2
-    [*] --> draft : Configuration created
+### 4.1 Document Upload and Parsing
 
-    draft --> configured : Config generated from<br/>document + adapter
-    configured --> draft : Reset to draft<br/>(re-edit)
-    configured --> validating : Start validation<br/>(POST /validate)
-    validating --> configured : Validation failed<br/>(errors found)
-    validating --> testing : Validation passed<br/>(POST /simulations/run)
-    testing --> configured : Tests failed<br/>(re-configure)
-    testing --> active : All tests passed<br/>(promote to production)
-    active --> deprecated : End of life<br/>(sunset integration)
-    active --> rollback : Emergency rollback<br/>(production issue)
-    deprecated --> draft : Revive integration<br/>(create new version)
-    rollback --> configured : Fix and re-configure
-    rollback --> draft : Full reset
-
-    state draft {
-        [*] --> editing
-        editing --> editing : Modify mappings/hooks
-    }
-
-    state configured {
-        [*] --> field_mappings_set
-        field_mappings_set --> hooks_configured
-        hooks_configured --> auth_configured
-    }
-
-    state testing {
-        [*] --> structure_test
-        structure_test --> mapping_test
-        mapping_test --> endpoint_tests
-        endpoint_tests --> auth_test
-        auth_test --> hook_test
-        hook_test --> error_test
-        error_test --> retry_test
-        retry_test --> [*]
-    }
-
-    note right of draft
-        Entry point for all
-        new configurations
-    end note
-
-    note right of active
-        Production-ready
-        Full audit trail
-    end note
-
-    note left of rollback
-        Emergency state
-        Requires manual
-        re-configuration
-    end note
+```
+User uploads file (DOCX/PDF/YAML/JSON)
+  |
+  v
+Route: POST /api/v1/documents/upload?doc_type=brd
+  |
+  +-- Validate extension (.docx, .pdf, .yaml, .yml, .json)
+  +-- Validate doc_type against DocType enum (brd, sow, api_spec, other)
+  +-- Validate file size against max_upload_size_mb
+  +-- Sanitize filename (PurePosixPath.name to prevent traversal)
+  +-- Save to uploads/{tenant_id}/{filename}
+  +-- Create Document record (status=parsing)
+  |
+  v
+DocumentParser.parse(file_path, doc_type)
+  |
+  +-- DOCX: python-docx -> paragraphs + table text
+  +-- PDF: pypdf -> page text extraction
+  +-- YAML/JSON: detect OpenAPI -> resolve $ref -> extract endpoints + fields
+  +-- Text: regex extraction of endpoints, fields, auth, services, sections
+  |
+  v
+ParsedDocumentResult stored as JSON in document.parsed_result
+Document status -> "parsed" (or "failed" with error_message)
+Audit log entry created
 ```
 
-### Transition Rules
+### 4.2 Configuration Generation
 
-| From State | Allowed Targets | Trigger |
-|-----------|----------------|---------|
-| `draft` | `configured` | Config generation from document + adapter |
-| `configured` | `validating`, `draft` | Start validation or reset |
-| `validating` | `testing`, `configured` | Pass/fail validation |
-| `testing` | `active`, `configured` | Pass/fail simulation |
-| `active` | `deprecated`, `rollback` | Sunset or emergency |
-| `deprecated` | `draft` | Revive as new version |
-| `rollback` | `configured`, `draft` | Fix or full reset |
-
----
-
-## 5. Module Interaction Diagram
-
-```mermaid
-flowchart TB
-    subgraph External["External Inputs"]
-        DOC["BRD / SOW / OpenAPI<br/>(DOCX, PDF, YAML, JSON)"]
-        PROVIDER["Provider APIs<br/>(CIBIL, eKYC, GST, Payment, Fraud, SMS)"]
-    end
-
-    subgraph API["FastAPI API Layer"]
-        direction LR
-        DOC_ROUTE["/documents"]
-        ADAPT_ROUTE["/adapters"]
-        CONFIG_ROUTE["/configurations"]
-        SIM_ROUTE["/simulations"]
-        AUDIT_ROUTE["/audit"]
-        WEBHOOK_ROUTE["/webhooks"]
-        HEALTH_ROUTE["/health"]
-        METRICS_ROUTE["/metrics"]
-    end
-
-    subgraph Middleware["Middleware Stack (execution order)"]
-        direction LR
-        CORS["CORS<br/>(allow all origins)"]
-        TENANT["Tenant Middleware<br/>(X-Tenant-ID extraction)"]
-        RATE["Rate Limiter<br/>(100 req/60s per tenant)"]
-        LOG["Request Logger<br/>(duration, status, path)"]
-    end
-
-    subgraph Services["Core Services"]
-        PARSER["DocumentParser<br/>- parse_docx()<br/>- parse_pdf()<br/>- parse_openapi()<br/>- extract_fields()<br/>- extract_endpoints()<br/>- extract_auth()"]
-
-        REGISTRY["AdapterRegistry<br/>- list_adapters()<br/>- get_adapter()<br/>- create_adapter()<br/>- add_version()<br/>- find_matching()"]
-
-        CONFIG_GEN["ConfigGenerator<br/>- generate()<br/>- build_endpoints()<br/>- generate_hooks()"]
-
-        FIELD_MAP["FieldMapper<br/>- map_fields()<br/>- synonym_match()<br/>- fuzzy_match()<br/>- token_overlap()"]
-
-        DIFF_ENGINE["ConfigDiffEngine<br/>- compare()<br/>- detect_breaking()"]
-
-        SIMULATOR["IntegrationSimulator<br/>- run_simulation()<br/>- run_stream()<br/>- parallel_version_test()"]
-
-        MOCK_SERVER["MockAPIServer<br/>- generate_response()<br/>- Indian fintech mock data"]
-
-        LIFECYCLE["IntegrationLifecycle<br/>- can_transition()<br/>- transition()<br/>- get_available()"]
-    end
-
-    subgraph Security["Security Services"]
-        VAULT["Credential Vault<br/>(Fernet AES-128-CBC)"]
-        PII["PII Masker<br/>(Aadhaar, PAN, phone,<br/>email, account)"]
-        JWT["JWT Engine<br/>(HS256, configurable expiry)"]
-        AUDIT_SVC["AuditService<br/>(immutable append-only)"]
-    end
-
-    subgraph Data["Data Layer"]
-        DB[(SQLite / PostgreSQL)]
-        UPLOADS[("/uploads/{tenant_id}/")]
-    end
-
-    DOC --> DOC_ROUTE
-    PROVIDER -.->|"Mock in simulation"| MOCK_SERVER
-
-    CORS --> TENANT --> RATE --> LOG --> API
-
-    DOC_ROUTE --> PARSER
-    ADAPT_ROUTE --> REGISTRY
-    CONFIG_ROUTE --> CONFIG_GEN
-    CONFIG_ROUTE --> DIFF_ENGINE
-    SIM_ROUTE --> SIMULATOR
-    AUDIT_ROUTE --> AUDIT_SVC
-    WEBHOOK_ROUTE --> VAULT
-
-    CONFIG_GEN --> FIELD_MAP
-    SIMULATOR --> MOCK_SERVER
-    CONFIG_GEN --> LIFECYCLE
-
-    PARSER -->|"Parsed fields"| CONFIG_GEN
-    REGISTRY -->|"Adapter schemas"| CONFIG_GEN
-    REGISTRY -->|"Adapter schemas"| SIMULATOR
-
-    VAULT --> DB
-    PII --> LOG
-    AUDIT_SVC --> DB
-    REGISTRY --> DB
-    CONFIG_GEN --> DB
-    SIMULATOR --> DB
-    PARSER --> UPLOADS
-
-    classDef external fill:#1e3a5f,stroke:#3b82f6,color:#fff
-    classDef api fill:#1e3a2f,stroke:#10b981,color:#fff
-    classDef middleware fill:#3a1e3f,stroke:#a855f7,color:#fff
-    classDef service fill:#3a2e1e,stroke:#f59e0b,color:#fff
-    classDef security fill:#3a1e1e,stroke:#ef4444,color:#fff
-    classDef data fill:#1e2a3a,stroke:#6b7280,color:#fff
-
-    class DOC,PROVIDER external
-    class DOC_ROUTE,ADAPT_ROUTE,CONFIG_ROUTE,SIM_ROUTE,AUDIT_ROUTE,WEBHOOK_ROUTE,HEALTH_ROUTE,METRICS_ROUTE api
-    class CORS,TENANT,RATE,LOG middleware
-    class PARSER,REGISTRY,CONFIG_GEN,FIELD_MAP,DIFF_ENGINE,SIMULATOR,MOCK_SERVER,LIFECYCLE service
-    class VAULT,PII,JWT,AUDIT_SVC security
-    class DB,UPLOADS data
+```
+User selects document + adapter version
+  |
+  v
+Route: POST /api/v1/configurations/generate
+  {document_id, adapter_version_id, name}
+  |
+  v
+Fetch Document.parsed_result and AdapterVersion schema
+  |
+  v
+[If AI enabled + Gemini key]
+  |
+  +-- LLM generation via Gemini REST API
+  |     Prompt: adapter info + parsed document + output schema
+  |     Temperature: 0.1, JSON response mode
+  |
+  +-- Rule-based augmentation:
+  |     - Index LLM mappings by source_field
+  |     - Override confidence scores with rule-based values
+  |     - Backfill any source fields LLM missed
+  |
+  +-- generation_path = "llm_with_rule_augment"
+  |
+[Else or if LLM fails]
+  |
+  +-- Pure rule-based generation via ConfigGenerator:
+  |     - Extract source fields from parsed document
+  |     - Extract target fields from adapter request/response schemas
+  |     - FieldMapper.map_fields() using synonym + fuzzy + token matching
+  |     - Build endpoint configs, transformation rules, hooks
+  |     - Include retry policy and timeout defaults
+  |
+  +-- generation_path = "rule_based" or "rule_based_fallback"
+  |
+  v
+Ensure minimum confidence (0.6) for mapped fields
+Save Configuration (status=configured, version=1)
+Create ConfigurationHistory entry (version=1, change_type=created)
+Audit log entry created
 ```
 
-### Field Mapping Strategy Pipeline
+### 4.3 Simulation Execution
 
-```mermaid
-flowchart LR
-    SOURCE["Source Field<br/>(from BRD)"] --> S1
+```
+User triggers simulation for a configuration
+  |
+  v
+Route: POST /api/v1/simulations/run
+  {configuration_id, test_type: "full"|"smoke"|"schema_only"}
+  |
+  v
+Create Simulation record (status=running)
+  |
+  v
+IntegrationSimulator.run_simulation(full_config, test_type)
+  |
+  +-- Step 1: Config structure validation (required keys present)
+  +-- Step 2: Field mapping validation (coverage >= 30%)
+  +-- Step 3: Per-endpoint mock testing
+  |     MockAPIServer routes to adapter-specific generator
+  |     Generates deterministic responses using hash-seeded data
+  +-- Step 4: Auth config validation
+  +-- Step 5: Hooks validation
+  +-- [full only] Step 6: Error handling validation
+  +-- [full only] Step 7: Retry logic validation
+  |
+  v
+Each step produces SimulationStepResult:
+  {step_name, status, request_payload, expected_response,
+   actual_response, duration_ms, confidence_score, error_message}
+  |
+  v
+Save Simulation results + individual SimulationStep records
+Update Configuration status -> "testing" (if passed) or keep "configured" (if failed)
+Audit log entry created
+Events emitted: simulation.completed -> webhook delivery
+```
 
-    subgraph Pipeline["3-Strategy Matching Pipeline"]
-        S1["Strategy 1<br/>Exact Synonym Match<br/>(FIELD_SYNONYMS dict)"]
-        S2["Strategy 2<br/>Fuzzy String Match<br/>(rapidfuzz token_sort_ratio)"]
-        S3["Strategy 3<br/>Partial Token Overlap<br/>(Jaccard similarity)"]
-        S1 -->|"No match"| S2
-        S2 -->|"Score < 60%"| S3
-    end
+**SSE streaming** (`GET /simulations/{id}/stream`):
+- If simulation already complete: replays stored steps from DB
+- If pending: runs fresh simulation with async step generator, persists results after all steps complete
 
-    S1 -->|"confidence: 1.0"| TARGET["Target Field<br/>(from Adapter Schema)"]
-    S2 -->|"confidence: score/100"| TARGET
-    S3 -->|"confidence: jaccard"| TARGET
-    S3 -->|"No match"| UNMAPPED["Unmapped<br/>(confidence: 0.0)"]
+### 4.4 Lifecycle Transitions
 
-    style SOURCE fill:#3b82f6,stroke:#60a5fa,color:#fff
-    style TARGET fill:#10b981,stroke:#34d399,color:#fff
-    style UNMAPPED fill:#ef4444,stroke:#f87171,color:#fff
+```
+State Machine:
+  draft -> configured -> validating -> testing -> active -> deprecated -> draft
+                                                        \-> rollback -> configured/draft
+
+User triggers: POST /api/v1/configurations/{id}/transition
+  {target_state, reason}
+  |
+  v
+IntegrationLifecycle validates transition against TRANSITIONS graph
+  |
+  +-- Valid: update config.status, create ConfigurationHistory entry
+  +-- Invalid: raise InvalidTransitionError -> 400 response
+  |
+  v
+Response includes available_transitions from new state
+Audit log entry created
 ```
 
 ---
 
-## 6. API Route Map
+## 5. Data Model
 
-### Route Overview
+### Entity Relationships
 
-```mermaid
-flowchart LR
-    subgraph Public["No Auth Required"]
-        H["GET /health"]
-        M["GET /metrics"]
-        D["GET /docs"]
-        R["GET /redoc"]
-    end
+```
+Tenant (1) ----< (*) Document
+Tenant (1) ----< (*) Configuration
+Tenant (1) ----< (*) Simulation
+Tenant (1) ----< (*) AuditLog
+Tenant (1) ----< (*) Webhook
 
-    subgraph V1["API v1 (/api/v1)"]
-        subgraph Documents["Documents"]
-            D1["POST /documents/upload"]
-            D2["GET /documents/"]
-            D3["GET /documents/{id}"]
-        end
-
-        subgraph Adapters["Adapters"]
-            A1["GET /adapters/"]
-            A2["GET /adapters/{id}"]
-            A3["GET /adapters/{id}/match"]
-        end
-
-        subgraph Configurations["Configurations"]
-            C1["GET /configurations/templates"]
-            C2["POST /configurations/generate"]
-            C3["GET /configurations/"]
-            C4["GET /configurations/{id}"]
-            C5["POST /configurations/{id}/validate"]
-            C6["GET /configurations/{id}/diff/{other_id}"]
-            C7["GET /configurations/{id}/export"]
-        end
-
-        subgraph Simulations["Simulations"]
-            S1["POST /simulations/run"]
-            S2["GET /simulations/{id}"]
-            S3["GET /simulations/{id}/stream"]
-        end
-
-        subgraph Audit["Audit"]
-            AU1["GET /audit/"]
-        end
-
-        subgraph Webhooks["Webhooks"]
-            W1["POST /webhooks/"]
-            W2["GET /webhooks/"]
-            W3["DELETE /webhooks/{id}"]
-            W4["POST /webhooks/{id}/test"]
-        end
-    end
+Adapter (1) ----< (*) AdapterVersion
+AdapterVersion (1) ----< (*) Configuration
+Document (1) ----< (*) Configuration     (optional, SET NULL on delete)
+Configuration (1) ----< (*) ConfigurationHistory
+Configuration (1) ----< (*) Simulation
+Simulation (1) ----< (*) SimulationStep
+Webhook (1) ----< (*) WebhookDelivery
 ```
 
-### Detailed Endpoint Reference
+### Table Details
 
-| Method | Path | Tags | Description | Tenant-Scoped |
-|--------|------|------|-------------|:---:|
-| `GET` | `/health` | Health | Healthcheck with DB and AI status | No |
-| `GET` | `/metrics` | Metrics | In-memory request metrics snapshot | No |
-| `POST` | `/api/v1/documents/upload` | Documents | Upload and parse BRD/SOW/spec | Yes |
-| `GET` | `/api/v1/documents/` | Documents | List tenant documents | Yes |
-| `GET` | `/api/v1/documents/{id}` | Documents | Get document with parsed result | Yes |
-| `GET` | `/api/v1/adapters/` | Adapters | List adapters, optional `?category=` | No |
-| `GET` | `/api/v1/adapters/{id}` | Adapters | Get adapter with all versions | No |
-| `GET` | `/api/v1/adapters/{id}/match` | Adapters | Find adapters matching services | No |
-| `GET` | `/api/v1/configurations/templates` | Configurations | List pre-built config templates | No |
-| `POST` | `/api/v1/configurations/generate` | Configurations | Generate config from document + adapter | Yes |
-| `GET` | `/api/v1/configurations/` | Configurations | List tenant configurations | Yes |
-| `GET` | `/api/v1/configurations/{id}` | Configurations | Get configuration detail | Yes |
-| `POST` | `/api/v1/configurations/{id}/validate` | Configurations | Validate config completeness | Yes |
-| `GET` | `/api/v1/configurations/{a}/diff/{b}` | Configurations | Compare two configurations | Yes |
-| `GET` | `/api/v1/configurations/{id}/export` | Configurations | Export as JSON or YAML file | Yes |
-| `POST` | `/api/v1/simulations/run` | Simulations | Run simulation against config | Yes |
-| `GET` | `/api/v1/simulations/{id}` | Simulations | Get simulation results | Yes |
-| `GET` | `/api/v1/simulations/{id}/stream` | Simulations | Stream results via SSE | Yes |
-| `GET` | `/api/v1/audit/` | Audit | Query audit logs (paginated) | Yes |
-| `POST` | `/api/v1/webhooks/` | Webhooks | Register webhook endpoint | Yes |
-| `GET` | `/api/v1/webhooks/` | Webhooks | List tenant webhooks | Yes |
-| `DELETE` | `/api/v1/webhooks/{id}` | Webhooks | Delete webhook | Yes |
-| `POST` | `/api/v1/webhooks/{id}/test` | Webhooks | Send test event to webhook | Yes |
+| Table | Key Columns | Mixins |
+|---|---|---|
+| `tenants` | name, slug (unique), is_active, settings (JSON) | UUID, Timestamp |
+| `documents` | filename, file_type, doc_type, status, raw_text, parsed_result (JSON), error_message | UUID, Tenant, Timestamp |
+| `adapters` | name, category, description, is_active, icon | UUID, Timestamp |
+| `adapter_versions` | adapter_id (FK), version, version_order, status, base_url, auth_type, request_schema (JSON), response_schema (JSON), endpoints (JSON), config_template (JSON), changelog | UUID, Timestamp |
+| `configurations` | name, adapter_version_id (FK), document_id (FK, nullable), status, version (int), field_mappings (JSON), transformation_rules (JSON), hooks (JSON), auth_config (JSON, encrypted), full_config (JSON), notes | UUID, Tenant, Timestamp |
+| `configuration_history` | configuration_id (FK), version (int), change_type, previous_value (JSON), new_value (JSON), changed_by | UUID, Tenant, Timestamp |
+| `simulations` | configuration_id (FK), status, test_type, total_tests, passed_tests, failed_tests, duration_ms, results (JSON), error_log | UUID, Tenant, Timestamp |
+| `simulation_steps` | simulation_id (FK), step_name, step_order, status, request_payload (JSON), expected_response (JSON), actual_response (JSON), duration_ms, confidence_score (float), error_message | UUID, Timestamp |
+| `audit_logs` | actor, action (indexed), resource_type (indexed), resource_id (indexed), details (JSON), ip_address, user_agent | UUID, Tenant, Timestamp |
+| `webhooks` | url, secret (Fernet-encrypted), events (JSON list), is_active | UUID, Tenant, Timestamp |
+| `webhook_deliveries` | webhook_id (FK), event_type, payload (JSON), status, response_code, attempts | UUID, Timestamp |
+
+### Status Enums
+
+**Document status:** `uploaded` -> `parsing` -> `parsed` | `failed`
+
+**Configuration status:** `draft` -> `configured` -> `validating` -> `testing` -> `active` -> `deprecated` | `rollback`
+
+**Simulation status:** `pending` -> `running` -> `passed` | `failed` | `error`
+
+**Adapter version status:** `active` | `deprecated` | `beta`
 
 ---
 
-## 7. Security Architecture
+## 6. Configuration
 
-```mermaid
-flowchart TB
-    subgraph Perimeter["Network Perimeter"]
-        NGINX["Nginx Reverse Proxy<br/>TLS termination, static serving"]
-    end
+All settings are managed via `core/config.py` using `pydantic-settings`. Environment variables use the `FINSPARK_` prefix.
 
-    subgraph AppSecurity["Application Security"]
-        direction TB
+| Variable | Default | Description |
+|---|---|---|
+| `FINSPARK_APP_NAME` | `FinSpark Integration Engine` | Application display name |
+| `FINSPARK_APP_VERSION` | `0.1.0` | Application version |
+| `FINSPARK_DEBUG` | `false` | Debug mode (relaxes auth, enables SQL echo, uses create_all instead of Alembic) |
+| `FINSPARK_DATABASE_URL` | `sqlite+aiosqlite:///./finspark.db` | SQLAlchemy async database URL |
+| `FINSPARK_SECRET_KEY` | `change-me-in-production-...` | JWT signing key. Must be >= 32 chars and not contain "change-me" or "insecure" when debug=false |
+| `FINSPARK_JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `FINSPARK_JWT_EXPIRY_MINUTES` | `60` | JWT token expiry in minutes |
+| `FINSPARK_ENCRYPTION_KEY` | `change-me-in-production` | Fernet encryption key for webhook secrets. Same production validation as secret_key |
+| `FINSPARK_ALLOWED_HOSTS` | `["localhost", "127.0.0.1"]` | Trusted host whitelist (production only) |
+| `FINSPARK_RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per tenant per window |
+| `FINSPARK_RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit sliding window duration |
+| `FINSPARK_UPLOAD_DIR` | `./uploads` | File upload storage directory |
+| `FINSPARK_MAX_UPLOAD_SIZE_MB` | `50` | Maximum upload file size in MB |
+| `FINSPARK_AI_ENABLED` | `false` | Enable LLM-augmented config generation |
+| `FINSPARK_GEMINI_API_KEY` | (empty) | Google Gemini API key |
+| `FINSPARK_GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini model identifier |
+| `FINSPARK_LLM_API_KEY` | (empty) | Generic LLM API key (unused, reserved) |
+| `FINSPARK_OPENAI_API_KEY` | (empty) | OpenAI API key (unused, reserved) |
 
-        subgraph AuthN["Authentication"]
-            TENANT_HDR["X-Tenant-ID Header<br/>(Middleware extraction)"]
-            JWT_TOKEN["JWT Tokens<br/>(HS256, configurable expiry)"]
-            API_KEY["API Key Auth<br/>(per-adapter)"]
-        end
+Settings are loaded from `.env` file and environment variables. A `model_validator` enforces that `secret_key` and `encryption_key` are strong (>= 32 chars, no insecure defaults) when `debug=false`.
 
-        subgraph AuthZ["Authorization"]
-            RBAC["Role-Based Access<br/>admin | configurator | viewer"]
-            TENANT_ISO["Row-Level Tenant Isolation<br/>(TenantMixin on 6 tables)"]
-        end
+---
 
-        subgraph RateLimit["Rate Limiting"]
-            TOKEN_BUCKET["Sliding Window Token Bucket<br/>100 requests / 60 seconds per tenant"]
-            EXEMPT["Exempt Paths:<br/>/health, /metrics, /docs, /redoc, /openapi.json"]
-        end
+## 7. Testing Strategy
 
-        subgraph DataProtection["Data Protection"]
-            FERNET["Fernet Symmetric Encryption<br/>SHA-256 derived key from FINSPARK_ENCRYPTION_KEY"]
-            PII_MASK["PII Masking Engine"]
-            HASH["SHA-256 Hashing<br/>(irreversible value hashing)"]
-        end
+### Test Organization
 
-        subgraph Audit["Audit & Observability"]
-            AUDIT_LOG["Immutable Audit Log<br/>actor, action, resource, details, IP, UA"]
-            REQ_LOG["Request Logger<br/>method, path, status, duration_ms, tenant_id"]
-            METRICS["Metrics Collector<br/>total_requests, per_endpoint, avg_response_time"]
-        end
-    end
-
-    subgraph DataAtRest["Data at Rest"]
-        DB_CREDS["Encrypted Credentials<br/>(Fernet in auth_config column)"]
-        WH_SECRETS["Encrypted Webhook Secrets<br/>(Fernet in secret column)"]
-        UPLOAD_DIR["Upload Directory<br/>Tenant-partitioned: /uploads/{tenant_id}/"]
-    end
-
-    NGINX --> TENANT_HDR
-    TENANT_HDR --> RBAC
-    RBAC --> TENANT_ISO
-
-    TENANT_HDR --> TOKEN_BUCKET
-
-    FERNET --> DB_CREDS
-    FERNET --> WH_SECRETS
-    PII_MASK --> REQ_LOG
-
-    classDef perimeter fill:#1e3a5f,stroke:#3b82f6,color:#fff
-    classDef auth fill:#1e3a2f,stroke:#10b981,color:#fff
-    classDef protect fill:#3a2e1e,stroke:#f59e0b,color:#fff
-    classDef audit fill:#3a1e3f,stroke:#a855f7,color:#fff
-    classDef data fill:#3a1e1e,stroke:#ef4444,color:#fff
-
-    class NGINX perimeter
-    class TENANT_HDR,JWT_TOKEN,API_KEY,RBAC,TENANT_ISO auth
-    class TOKEN_BUCKET,EXEMPT,FERNET,PII_MASK,HASH protect
-    class AUDIT_LOG,REQ_LOG,METRICS audit
-    class DB_CREDS,WH_SECRETS,UPLOAD_DIR data
-```
-
-### PII Detection Patterns
-
-| PII Type | Regex Pattern | Mask Output |
-|----------|--------------|-------------|
-| Aadhaar | `\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b` | `XXXX-XXXX-XXXX` |
-| PAN | `\b[A-Z]{5}\d{4}[A-Z]\b` | `XXXXX****X` |
-| Phone | `\b(?:\+91[\s-]?)?\d{10}\b` | `XXXXXXXXXX` |
-| Email | `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z\|a-z]{2,}\b` | `***@***.***` |
-| Account | `\b\d{9,18}\b` | `XXXXXXXXXX` |
-
-### Security Configuration (Environment Variables)
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `FINSPARK_SECRET_KEY` | JWT signing key | `change-me-in-production-use-openssl-rand-hex-32` |
-| `FINSPARK_ENCRYPTION_KEY` | Fernet key derivation seed | `change-me-in-production` |
-| `FINSPARK_JWT_ALGORITHM` | JWT algorithm | `HS256` |
-| `FINSPARK_JWT_EXPIRY_MINUTES` | Token TTL | `60` |
-| `FINSPARK_DATABASE_URL` | DB connection string | `sqlite+aiosqlite:///./finspark.db` |
-
-### Middleware Execution Order
-
-Middleware is applied in reverse registration order (last added = first executed):
+Tests are split across two root directories with identical structure:
 
 ```
-Request  -->  RequestLoggingMiddleware  (logs timing)
-         -->  RateLimiterMiddleware     (enforces limits)
-         -->  TenantMiddleware          (extracts tenant)
-         -->  CORSMiddleware            (CORS headers)
-         -->  Route Handler
-Response <--  (same stack, reversed)
+tests/                      # Primary test suite
+  conftest.py               # Shared fixtures (async DB session, test client, tenant headers)
+  unit/
+    conftest.py
+    test_field_mapper.py
+    test_diff_engine.py
+    test_security.py
+    test_lifecycle.py
+    test_simulator.py
+    test_mock_responses.py
+    test_config_validator.py
+    test_pii_masking.py
+    test_rate_limiter.py
+    test_events.py
+    test_rollback.py
+    test_analytics.py
+    test_jwt_token.py
+    test_rbac.py
+    ... (50+ unit test files)
+  integration/
+    test_full_workflow.py
+    test_e2e_flow.py
+    test_api_endpoints.py
+    test_webhooks.py
+    test_search_api.py
+    test_config_export.py
+    test_batch_operations.py
+    test_simulation_all_adapters.py
+    ... (10+ integration test files)
+
+backend/tests/              # Secondary test suite
+  conftest.py
+  unit/
+    test_document_parser.py
+    test_config_generation.py
+    test_simulation.py
+    test_llm_client.py
+    ... (20+ unit test files)
+  integration/
+    test_api_documents.py
+    test_api_config.py
+    test_full_workflow.py
+    ... (8+ integration test files)
+
+frontend/src/components/__tests__/
+  Pagination.test.tsx
+  EmptyState.test.tsx
+  Layout.test.tsx
+  Toast.test.tsx
+  PageErrorBoundary.test.tsx
 ```
+
+### Test Categories
+
+**Unit tests** cover:
+- Service logic: document parsing, field mapping, diff engine, config validation, lifecycle state machine, simulator, mock responses, search scoring
+- Security: PII masking, JWT creation/verification, encryption, RBAC enforcement, security headers, SSRF URL validation
+- Infrastructure: rate limiter (sliding window, bounded tenants), event system, health monitor, database session management
+- Production hardening: insecure key rejection, model index verification, UTC timestamp usage, Alembic migration
+
+**Integration tests** cover:
+- Full API workflow: document upload -> config generation -> simulation -> lifecycle transitions
+- API endpoint testing: all 34 endpoints with proper tenant context
+- Webhook registration, delivery, and test sending
+- Search API with real database queries
+- Configuration export (JSON/YAML), batch validation/simulation
+- All 8 adapter simulation scenarios
+- Tenant mutation isolation
+
+**Frontend tests** (Vitest + React Testing Library):
+- Component rendering: Layout sidebar navigation, Pagination controls, Toast notifications, EmptyState display, PageErrorBoundary error recovery
+
+### Coverage
+
+850+ tests passing with 82% code coverage.

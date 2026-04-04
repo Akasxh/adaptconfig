@@ -1,5 +1,6 @@
 """Document upload and parsing routes."""
 
+import asyncio
 from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
@@ -78,8 +79,11 @@ async def upload_document(
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_path = upload_dir / safe_name
 
-    with open(file_path, "wb") as f:
-        f.write(file_bytes)
+    def _write_file(path: Path, data: bytes) -> None:
+        with open(path, "wb") as f:
+            f.write(data)
+
+    await asyncio.to_thread(_write_file, file_path, file_bytes)
 
     # Create document record
     doc = Document(
@@ -95,7 +99,7 @@ async def upload_document(
 
     # Parse document
     try:
-        result = parser.parse(file_path, doc_type=doc_type)
+        result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
         doc.parsed_result = result.model_dump_json()
         doc.raw_text = result.summary[:5000]
         doc.status = "parsed"

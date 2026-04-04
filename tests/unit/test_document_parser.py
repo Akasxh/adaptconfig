@@ -134,6 +134,57 @@ class TestDocumentParserFieldTypes:
         assert DocumentParser._infer_field_type("reference_id") == "string"
 
 
+class TestDocumentParserAutoDocType:
+    """Test doc_type='auto' normalization (issue #72)."""
+
+    def test_parse_text_auto_doc_type_normalizes_to_brd(self, parser: DocumentParser) -> None:
+        result = parser.parse_text("PAN verification via API key", doc_type="auto")
+        assert result.doc_type.value == "brd"
+
+    def test_parse_text_invalid_doc_type_defaults_to_brd(self, parser: DocumentParser) -> None:
+        result = parser.parse_text("Some text", doc_type="bogus_type")
+        assert result.doc_type.value == "brd"
+
+    def test_parse_text_valid_doc_type_preserved(self, parser: DocumentParser) -> None:
+        result = parser.parse_text("Some text", doc_type="sow")
+        assert result.doc_type.value == "sow"
+
+    def test_parse_file_auto_doc_type(self, parser: DocumentParser, sample_openapi_path: Path) -> None:
+        """parse() with doc_type='auto' should not crash."""
+        result = parser.parse(sample_openapi_path, doc_type="auto")
+        assert result.doc_type == "api_spec"
+
+
+class TestResolveRef:
+    """Test _resolve_ref uses removeprefix correctly (issue #72)."""
+
+    def test_resolve_standard_ref(self) -> None:
+        spec = {
+            "components": {"schemas": {"Foo": {"type": "object", "properties": {"x": {"type": "string"}}}}}
+        }
+        result = DocumentParser._resolve_ref("#/components/schemas/Foo", spec)
+        assert result["type"] == "object"
+
+    def test_resolve_ref_non_local_returns_empty(self) -> None:
+        result = DocumentParser._resolve_ref("http://example.com/schema", {})
+        assert result == {}
+
+    def test_resolve_ref_missing_path_returns_empty(self) -> None:
+        result = DocumentParser._resolve_ref("#/components/schemas/Missing", {"components": {"schemas": {}}})
+        assert result == {}
+
+    def test_resolve_ref_with_hash_like_key(self) -> None:
+        """removeprefix('#/') only strips the exact prefix, not individual chars."""
+        spec = {"#hash_key": {"data": {"value": 42}}}
+        result = DocumentParser._resolve_ref("#/#hash_key/data", spec)
+        assert result == {"value": 42}
+
+    def test_resolve_ref_non_dict_node_returns_empty(self) -> None:
+        spec = {"components": "not_a_dict"}
+        result = DocumentParser._resolve_ref("#/components/schemas", spec)
+        assert result == {}
+
+
 class TestDocumentParserUnsupported:
     """Test error handling for unsupported formats."""
 

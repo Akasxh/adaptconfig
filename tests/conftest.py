@@ -80,12 +80,15 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        ac.headers["X-Tenant-ID"] = "test-tenant"
-        ac.headers["X-Tenant-Name"] = "Test Tenant"
-        ac.headers["X-Tenant-Role"] = "admin"
-        yield ac
+    # Patch async_session_factory in the simulations route so SSE generators
+    # (which open fresh sessions) use the same test in-memory DB.
+    with patch("finspark.api.routes.simulations.async_session_factory", test_session_factory):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.headers["X-Tenant-ID"] = "test-tenant"
+            ac.headers["X-Tenant-Name"] = "Test Tenant"
+            ac.headers["X-Tenant-Role"] = "admin"
+            yield ac
 
     app.dependency_overrides.clear()
 

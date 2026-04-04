@@ -32,7 +32,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -280,7 +280,7 @@ function HistoryPanel({ configId, currentVersion }: { configId: string; currentV
               {entry.change_type.replace(/_/g, " ")}
             </p>
             <p style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-              {entry.changed_by} · {fmtDateTime(entry.timestamp)}
+              {entry.changed_by} · {fmtDateTime(entry.created_at)}
             </p>
           </div>
           {entry.version === currentVersion ? (
@@ -308,6 +308,11 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
   const queryClient = useQueryClient();
   const [mappings, setMappings] = useState<FieldMapping[]>(() => cfg.field_mappings.map((fm) => ({ ...fm })));
   const [isDirty, setIsDirty] = useState(false);
+
+  useEffect(() => {
+    setMappings(cfg.field_mappings.map((fm) => ({ ...fm })));
+    setIsDirty(false);
+  }, [cfg.id, cfg.version]);
 
   const saveMutation = useMutation({
     mutationFn: (fms: FieldMapping[]) => configurationsApi.update(cfg.id, { field_mappings: fms }),
@@ -497,7 +502,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
           })}
         </div>
 
-        {activeTab === "mappings" && <MappingsTable cfg={cfg} />}
+        {activeTab === "mappings" && <MappingsTable key={cfg.id} cfg={cfg} />}
         {activeTab === "history" && <HistoryPanel configId={cfg.id} currentVersion={cfg.version} />}
         {activeTab === "validation" && <ValidationPanel configId={cfg.id} />}
       </div>
@@ -1068,7 +1073,10 @@ export default function Configurations() {
                             className="btn-secondary"
                             style={{ fontSize: 11, padding: "5px 10px" }}
                             disabled={transitionMutation.isPending}
-                            onClick={() => transitionMutation.mutate({ id: cfg.id, targetState: t.targetState })}
+                            onClick={() => {
+                              if (t.targetState === "active" && !window.confirm(`Deploy "${cfg.name}" to production?`)) return;
+                              transitionMutation.mutate({ id: cfg.id, targetState: t.targetState });
+                            }}
                           >
                             <TIcon style={{ width: 12, height: 12 }} />
                             {t.label}

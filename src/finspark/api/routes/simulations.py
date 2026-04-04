@@ -1,5 +1,6 @@
 """Simulation and testing routes."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
 from finspark.core.audit import AuditService
-from finspark.core.database import get_db
+from finspark.core.database import async_session_factory, get_db
 from finspark.models.configuration import Configuration
 from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, TenantContext
@@ -96,7 +97,7 @@ async def run_simulation(
     await db.flush()
 
     # Run simulation
-    steps = simulator.run_simulation(full_config, test_type=request.test_type)
+    steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
 
     # Save results
     total = len(steps)
@@ -223,6 +224,9 @@ async def stream_simulation(
 
     Replays stored steps from DB if the simulation is already complete.
     Otherwise runs the simulation fresh with per-step timeout, then persists results.
+
+    Uses a fresh DB session inside generators to avoid operating on the
+    DI-scoped session after the request handler returns (GitHub issue #70).
     """
     sim_stmt = select(Simulation).where(
         Simulation.id == simulation_id,
@@ -233,20 +237,27 @@ async def stream_simulation(
     if not simulation:
         raise HTTPException(status_code=404, detail="Simulation not found")
 
-    # If already complete, replay stored steps from DB
+    # Capture IDs for use inside generators (session-independent scalars)
+    sim_id = simulation.id
+    config_id = simulation.configuration_id
+    tenant_id = tenant.tenant_id
+
+    # If already complete, replay stored steps via a fresh session
     if simulation.status in ("passed", "failed"):
-        steps_stmt = (
-            select(SimulationStep)
-            .where(SimulationStep.simulation_id == simulation.id)
-            .order_by(SimulationStep.step_order)
-        )
-        steps_result = await db.execute(steps_stmt)
-        stored_steps = list(steps_result.scalars().all())
 
         async def replay_generator() -> AsyncGenerator[str, None]:
-            for step in stored_steps:
-                yield f"event: step\ndata: {json.dumps(_serialize_step(step))}\n\n"
-            yield f'event: done\ndata: {{"total_steps": {len(stored_steps)}}}\n\n'
+            async with async_session_factory() as fresh_db:
+                steps_stmt = (
+                    select(SimulationStep)
+                    .where(SimulationStep.simulation_id == sim_id)
+                    .order_by(SimulationStep.step_order)
+                )
+                steps_result = await fresh_db.execute(steps_stmt)
+                stored_steps = list(steps_result.scalars().all())
+
+                for step in stored_steps:
+                    yield f"event: step\ndata: {json.dumps(_serialize_step(step))}\n\n"
+                yield f'event: done\ndata: {{"total_steps": {len(stored_steps)}}}\n\n'
 
         return StreamingResponse(
             replay_generator(),
@@ -254,10 +265,10 @@ async def stream_simulation(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # Run fresh — fetch configuration first
+    # Run fresh -- fetch configuration to validate before streaming
     cfg_stmt = select(Configuration).where(
-        Configuration.id == simulation.configuration_id,
-        Configuration.tenant_id == tenant.tenant_id,
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant_id,
     )
     cfg_result = await db.execute(cfg_stmt)
     config = cfg_result.scalar_one_or_none()
@@ -266,7 +277,6 @@ async def stream_simulation(
 
     full_config = json.loads(config.full_config)
     test_type = simulation.test_type
-    sim_id = simulation.id
 
     async def run_and_stream() -> AsyncGenerator[str, None]:
         step_index = 0
@@ -281,37 +291,52 @@ async def stream_simulation(
         except Exception as exc:
             error_data = json.dumps({"message": str(exc), "steps_completed": step_index})
             yield f"event: error\ndata: {error_data}\n\n"
+            # Persist error status in a fresh session
+            async with async_session_factory() as err_db:
+                err_result = await err_db.execute(
+                    select(Simulation).where(Simulation.id == sim_id)
+                )
+                err_simulation = err_result.scalar_one()
+                err_simulation.status = "error"
+                err_simulation.error_log = str(exc)
+                await err_db.commit()
             return
 
-        # Persist results to DB
-        total = len(collected)
-        passed_count = sum(1 for s in collected if s.status == "passed")
-        failed_count = total - passed_count
-        total_duration = sum(s.duration_ms for s in collected)
-
-        simulation.status = "passed" if failed_count == 0 else "failed"
-        simulation.total_tests = total
-        simulation.passed_tests = passed_count
-        simulation.failed_tests = failed_count
-        simulation.duration_ms = total_duration
-        simulation.results = json.dumps([s.model_dump() for s in collected])
-
-        for i, step in enumerate(collected):
-            sim_step = SimulationStep(
-                simulation_id=sim_id,
-                step_name=step.step_name,
-                step_order=i,
-                status=step.status,
-                request_payload=json.dumps(step.request_payload),
-                expected_response=json.dumps(step.expected_response),
-                actual_response=json.dumps(step.actual_response),
-                duration_ms=step.duration_ms,
-                confidence_score=step.confidence_score,
-                error_message=step.error_message,
+        # Persist results to DB using a fresh session
+        async with async_session_factory() as fresh_db:
+            result = await fresh_db.execute(
+                select(Simulation).where(Simulation.id == sim_id)
             )
-            db.add(sim_step)
+            sim_row = result.scalar_one()
 
-        await db.flush()
+            total = len(collected)
+            passed_count = sum(1 for s in collected if s.status == "passed")
+            failed_count = total - passed_count
+            total_duration = sum(s.duration_ms for s in collected)
+
+            sim_row.status = "passed" if failed_count == 0 else "failed"
+            sim_row.total_tests = total
+            sim_row.passed_tests = passed_count
+            sim_row.failed_tests = failed_count
+            sim_row.duration_ms = total_duration
+            sim_row.results = json.dumps([s.model_dump() for s in collected])
+
+            for i, step in enumerate(collected):
+                sim_step = SimulationStep(
+                    simulation_id=sim_id,
+                    step_name=step.step_name,
+                    step_order=i,
+                    status=step.status,
+                    request_payload=json.dumps(step.request_payload),
+                    expected_response=json.dumps(step.expected_response),
+                    actual_response=json.dumps(step.actual_response),
+                    duration_ms=step.duration_ms,
+                    confidence_score=step.confidence_score,
+                    error_message=step.error_message,
+                )
+                fresh_db.add(sim_step)
+
+            await fresh_db.commit()
 
         yield f'event: done\ndata: {{"total_steps": {step_index}}}\n\n'
 

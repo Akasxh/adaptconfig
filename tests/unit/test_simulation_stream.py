@@ -1,13 +1,14 @@
-"""Unit tests verifying the SSE stream endpoint queries Simulation first."""
+"""Unit tests verifying the SSE stream endpoint uses fresh DB sessions in generators."""
 
 import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from finspark.models.configuration import Configuration
-from finspark.models.simulation import Simulation
+from finspark.models.simulation import Simulation, SimulationStep
 
 
 @pytest.fixture
@@ -46,6 +47,27 @@ def _make_db(simulation_row, config_row):
     db = AsyncMock()
     db.execute.side_effect = execute
     return db
+
+
+def _make_fresh_session_factory(sim_row=None):
+    """Return a mock async_session_factory context manager for generator-internal use."""
+    mock_session = AsyncMock()
+
+    async def mock_execute(stmt):
+        result = MagicMock()
+        result.scalar_one.return_value = sim_row
+        result.scalars.return_value.all.return_value = []
+        return result
+
+    mock_session.execute.side_effect = mock_execute
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    @asynccontextmanager
+    async def factory():
+        yield mock_session
+
+    return factory, mock_session
 
 
 class TestStreamEndpointLooksUpSimulationFirst:
@@ -146,7 +168,11 @@ class TestStreamEndpointLooksUpSimulationFirst:
     async def test_sse_event_generator_emits_step_and_done_events(
         self, sample_full_config: dict
     ):
-        """SSE generator yields step events followed by done event."""
+        """SSE generator yields step events followed by done event.
+
+        The run_and_stream generator uses async_session_factory internally
+        to persist results, so we patch it.
+        """
         from finspark.api.routes.simulations import stream_simulation
         from finspark.schemas.common import TenantContext
         from finspark.schemas.simulations import SimulationStepResult
@@ -156,6 +182,7 @@ class TestStreamEndpointLooksUpSimulationFirst:
         simulation.configuration_id = "cfg-xyz"
         simulation.tenant_id = "test-tenant"
         simulation.status = "pending"
+        simulation.test_type = "full"
 
         config = MagicMock(spec=Configuration)
         config.id = "cfg-xyz"
@@ -180,28 +207,34 @@ class TestStreamEndpointLooksUpSimulationFirst:
 
         simulator.run_simulation_stream_async = fake_stream
 
-        response = await stream_simulation(
-            simulation_id="sim-abc",
-            db=db,
-            tenant=tenant,
-            simulator=simulator,
-        )
+        # Mock the fresh session used inside the generator
+        factory, mock_session = _make_fresh_session_factory(sim_row=simulation)
 
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+        with patch("finspark.api.routes.simulations.async_session_factory", factory):
+            response = await stream_simulation(
+                simulation_id="sim-abc",
+                db=db,
+                tenant=tenant,
+                simulator=simulator,
+            )
+
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
 
         full_body = "".join(chunks)
         assert "event: step" in full_body
         assert "auth_config_validation" in full_body
-        assert 'event: done' in full_body
+        assert "event: done" in full_body
         assert '"total_steps": 1' in full_body
+        # Verify the fresh session committed results
+        mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_sse_event_generator_emits_error_event_on_exception(
         self, sample_full_config: dict
     ):
-        """SSE generator emits error event when streaming raises an exception."""
+        """SSE generator emits error event and persists error status via fresh session."""
         from finspark.api.routes.simulations import stream_simulation
         from finspark.schemas.common import TenantContext
 
@@ -210,6 +243,7 @@ class TestStreamEndpointLooksUpSimulationFirst:
         simulation.configuration_id = "cfg-err"
         simulation.tenant_id = "test-tenant"
         simulation.status = "pending"
+        simulation.test_type = "full"
 
         config = MagicMock(spec=Configuration)
         config.id = "cfg-err"
@@ -219,22 +253,95 @@ class TestStreamEndpointLooksUpSimulationFirst:
         tenant = TenantContext(tenant_id="test-tenant", tenant_name="Test", tenant_role="admin")
 
         simulator = MagicMock()
+
         async def failing_stream(config, test_type=None):
             raise RuntimeError("stream exploded")
             yield  # make it an async generator
+
         simulator.run_simulation_stream_async = failing_stream
 
-        response = await stream_simulation(
-            simulation_id="sim-err",
-            db=db,
-            tenant=tenant,
-            simulator=simulator,
-        )
+        # The error path uses async_session_factory to persist error status
+        err_sim = MagicMock(spec=Simulation)
+        err_sim.id = "sim-err"
+        err_sim.status = "running"
+        factory, mock_session = _make_fresh_session_factory(sim_row=err_sim)
 
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
+        with patch("finspark.api.routes.simulations.async_session_factory", factory):
+            response = await stream_simulation(
+                simulation_id="sim-err",
+                db=db,
+                tenant=tenant,
+                simulator=simulator,
+            )
+
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
 
         full_body = "".join(chunks)
         assert "event: error" in full_body
         assert "stream exploded" in full_body
+        # Verify error status was persisted
+        assert err_sim.status == "error"
+        assert err_sim.error_log == "stream exploded"
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_replay_uses_fresh_session_for_completed_simulation(self):
+        """Replay path opens a fresh DB session instead of using the DI-scoped one."""
+        from finspark.api.routes.simulations import stream_simulation
+        from finspark.schemas.common import TenantContext
+
+        simulation = MagicMock(spec=Simulation)
+        simulation.id = "sim-done"
+        simulation.configuration_id = "cfg-done"
+        simulation.tenant_id = "test-tenant"
+        simulation.status = "passed"
+
+        db = _make_db(simulation_row=simulation, config_row=None)
+        tenant = TenantContext(tenant_id="test-tenant", tenant_name="Test", tenant_role="admin")
+        simulator = MagicMock()
+
+        # Build a mock stored step
+        stored_step = MagicMock(spec=SimulationStep)
+        stored_step.step_name = "schema_validation"
+        stored_step.status = "passed"
+        stored_step.request_payload = '{"pan": "ABCDE1234F"}'
+        stored_step.expected_response = '{"score": 750}'
+        stored_step.actual_response = '{"score": 750}'
+        stored_step.duration_ms = 12
+        stored_step.confidence_score = 0.95
+        stored_step.error_message = None
+
+        mock_session = AsyncMock()
+
+        async def mock_execute(stmt):
+            result = MagicMock()
+            result.scalars.return_value.all.return_value = [stored_step]
+            return result
+
+        mock_session.execute.side_effect = mock_execute
+
+        @asynccontextmanager
+        async def factory():
+            yield mock_session
+
+        with patch("finspark.api.routes.simulations.async_session_factory", factory):
+            response = await stream_simulation(
+                simulation_id="sim-done",
+                db=db,
+                tenant=tenant,
+                simulator=simulator,
+            )
+
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+
+        full_body = "".join(chunks)
+        assert "event: step" in full_body
+        assert "schema_validation" in full_body
+        assert "event: done" in full_body
+        assert '"total_steps": 1' in full_body
+        # Verify the fresh session was used (not the DI db)
+        mock_session.execute.assert_awaited_once()

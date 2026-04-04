@@ -72,6 +72,11 @@ export interface Document {
   parsed_at?: string;
 }
 
+export interface DocumentDetail extends Document {
+  parsed_result?: Record<string, unknown> | null;
+  updated_at: string;
+}
+
 export interface FieldMapping {
   source_field: string;
   target_field: string;
@@ -89,6 +94,8 @@ export interface Configuration {
   status: string;
   version: number;
   field_mappings: FieldMapping[];
+  transformation_rules?: Record<string, unknown>[];
+  hooks?: Record<string, unknown>[];
   created_at: string;
   updated_at: string;
   // legacy optional fields kept for backward compat
@@ -118,7 +125,7 @@ export interface Simulation {
   passed_tests: number;
   failed_tests: number;
   duration_ms?: number;
-  steps: SimulationStepResult[];
+  steps?: SimulationStepResult[];
   created_at: string;
   // legacy optional fields kept for backward compat
   name?: string;
@@ -175,11 +182,14 @@ export interface ConfigTemplateResponse {
 }
 
 export interface ConfigHistoryEntry {
+  id: string;
+  configuration_id: string;
   version: number;
   change_type: string;
   changed_by: string;
-  timestamp: string;
-  snapshot?: Record<string, unknown>;
+  previous_value?: Record<string, unknown> | null;
+  new_value?: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface HealthStatus {
@@ -208,6 +218,15 @@ export interface ConfigDiffItem {
 export interface ConfigDiffResponse {
   config_a_id: string;
   config_b_id: string;
+  total_changes: number;
+  breaking_changes: number;
+  diffs: ConfigDiffItem[];
+}
+
+export interface VersionComparisonResponse {
+  configuration_id: string;
+  version_a: number;
+  version_b: number;
   total_changes: number;
   breaking_changes: number;
   diffs: ConfigDiffItem[];

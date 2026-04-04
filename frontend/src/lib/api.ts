@@ -11,11 +11,13 @@ import type {
   Configuration,
   DeprecationInfo,
   Document,
+  DocumentDetail,
   FieldMapping,
   HealthStatus,
   PaginatedResponse,
   SearchResponse,
   Simulation,
+  VersionComparisonResponse,
 } from "@/types";
 import axios from "axios";
 
@@ -67,7 +69,7 @@ export const adaptersApi = {
 export const documentsApi = {
   list: () => api.get<APIResponse<Document[]>>("/api/v1/documents/").then((r) => r.data),
   get: (id: string) =>
-    api.get<APIResponse<Document>>(`/api/v1/documents/${id}`).then((r) => r.data),
+    api.get<APIResponse<DocumentDetail>>(`/api/v1/documents/${id}`).then((r) => r.data),
   upload: (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     const docType = ["yaml", "yml", "json"].includes(ext) ? "api_spec" : "brd";
@@ -80,7 +82,7 @@ export const documentsApi = {
       .then((r) => r.data);
   },
   delete: (id: string) =>
-    api.delete<APIResponse<{ message: string }>>(`/api/v1/documents/${id}`).then((r) => r.data),
+    api.delete<APIResponse<{ id: string; deleted: boolean }>>(`/api/v1/documents/${id}`).then((r) => r.data),
 };
 
 export const configurationsApi = {
@@ -121,9 +123,10 @@ export const configurationsApi = {
       .then((r) => r.data),
   rollback: (id: string, targetVersion: number) =>
     api
-      .post<APIResponse<{ id: string; name: string; previous_version: number; restored_version: number; status: string }>>(`/api/v1/configurations/${id}/rollback`, {
-        target_version: targetVersion,
-      })
+      .post<APIResponse<{ id: string; name: string; previous_version: number; restored_version: number; status: string }>>(
+        `/api/v1/configurations/${id}/rollback`,
+        { target_version: targetVersion },
+      )
       .then((r) => r.data),
   getSummary: () =>
     api
@@ -135,7 +138,7 @@ export const configurationsApi = {
       .then((r) => r.data),
   compareVersions: (configId: string, v1: number, v2: number) =>
     api
-      .get<APIResponse<ConfigDiffResponse>>(`/api/v1/configurations/${configId}/history/compare`, {
+      .get<APIResponse<VersionComparisonResponse>>(`/api/v1/configurations/${configId}/history/compare`, {
         params: { v1, v2 },
       })
       .then((r) => r.data),
@@ -153,7 +156,7 @@ export const configurationsApi = {
 
 export const simulationsApi = {
   list: () => api.get<APIResponse<Simulation[]>>("/api/v1/simulations/").then((r) => r.data),
-  run: (params: { name?: string; configuration_id: string; test_type?: string }) =>
+  run: (params: { configuration_id: string; test_type?: string }) =>
     api.post<APIResponse<Simulation>>("/api/v1/simulations/run", params).then((r) => r.data),
   get: (id: string) =>
     api.get<APIResponse<Simulation>>(`/api/v1/simulations/${id}`).then((r) => r.data),
@@ -177,21 +180,28 @@ export const auditApi = {
 };
 
 export interface DashboardAnalytics {
+  // Backend chart fields
   weekly_activity?: Array<{ name: string; documents: number; simulations: number }>;
   throughput?: Array<{ hour: string; records: number }>;
   total_processed?: number;
   total_warnings?: number;
+  // Backend aggregate fields
+  configurations?: { total: number; by_status: Record<string, number>; active: number; draft: number };
+  simulations?: { total: number; passed: number; failed: number; pass_rate: number; avg_duration_ms: number };
+  documents?: { total: number; by_status: Record<string, number> };
+  audit_entries?: number;
+  health_score?: number;
 }
 
 export const analyticsApi = {
   dashboard: () =>
     api.get<APIResponse<DashboardAnalytics>>("/api/v1/analytics/dashboard").then((r) => r.data),
   health: () =>
-    api.get<APIResponse<unknown>>("/api/v1/analytics/health").then((r) => r.data),
+    api.get<Record<string, unknown>>("/api/v1/analytics/health").then((r) => r.data),
 };
 
 export const metricsApi = {
-  get: () => api.get<string>("/metrics").then((r) => r.data),
+  get: () => api.get<Record<string, unknown>>("/metrics").then((r) => r.data),
 };
 
 export const searchApi = {
@@ -209,13 +219,13 @@ interface WebhookTestResult { id: string; webhook_id: string; event_type: string
 export const webhooksApi = {
   list: () =>
     api.get<APIResponse<WebhookEntry[]>>("/api/v1/webhooks/", { headers: { "X-Tenant-ID": "default" } }).then((r) => r.data),
-  create: (data: { url: string; events: string[]; secret?: string }) =>
+  create: (data: { url: string; events: string[]; secret: string }) =>
     api
       .post<APIResponse<WebhookEntry>>("/api/v1/webhooks/", data, { headers: { "X-Tenant-ID": "default" } })
       .then((r) => r.data),
   delete: (id: string) =>
     api
-      .delete<APIResponse<{ message: string }>>(`/api/v1/webhooks/${id}`, { headers: { "X-Tenant-ID": "default" } })
+      .delete<APIResponse<null>>(`/api/v1/webhooks/${id}`, { headers: { "X-Tenant-ID": "default" } })
       .then((r) => r.data),
   test: (id: string) =>
     api
