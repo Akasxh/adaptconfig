@@ -14,6 +14,7 @@ import {
   Layers,
   Link2,
   Loader2,
+  Search,
   Shield,
   Upload,
   X,
@@ -247,14 +248,18 @@ function DetailModal({
                   {parsed.summary && (
                     <div>
                       <p className="text-xs font-medium text-gray-500 mb-1">Summary</p>
-                      <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-line">{parsed.summary}</p>
+                      <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-line">
+                        {parsed.summary}
+                      </p>
                     </div>
                   )}
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="rounded-lg bg-gray-800/50 p-3">
                       <p className="text-xs text-gray-500">Confidence</p>
                       <p className="mt-1 text-lg font-bold text-emerald-400">
-                        {parsed.confidence_score != null ? `${Math.round(parsed.confidence_score * 100)}%` : "—"}
+                        {parsed.confidence_score != null
+                          ? `${Math.round(parsed.confidence_score * 100)}%`
+                          : "—"}
                       </p>
                     </div>
                     <div className="rounded-lg bg-gray-800/50 p-3">
@@ -281,7 +286,10 @@ function DetailModal({
                       <p className="text-xs font-medium text-gray-500 mb-2">Services Identified</p>
                       <div className="flex flex-wrap gap-2">
                         {parsed.services_identified.map((s) => (
-                          <span key={s} className="rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">
+                          <span
+                            key={s}
+                            className="rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300"
+                          >
                             {s}
                           </span>
                         ))}
@@ -370,7 +378,9 @@ function DetailModal({
                                 <span className="text-gray-600">No</span>
                               )}
                             </td>
-                            <td className="py-2 pr-3 text-gray-500 text-[10px]">{f.source_section || "—"}</td>
+                            <td className="py-2 pr-3 text-gray-500 text-[10px]">
+                              {f.source_section || "—"}
+                            </td>
                             <td className="py-2 text-gray-400">{f.description || "—"}</td>
                           </tr>
                         ))}
@@ -427,6 +437,7 @@ export default function Documents() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<Document | null>(null);
+  const [search, setSearch] = useState("");
 
   const { data, error, isLoading } = useQuery({
     queryKey: ["documents"],
@@ -502,7 +513,10 @@ export default function Documents() {
     },
   });
 
-  const documents: Document[] = data?.data ?? [];
+  const allDocuments: Document[] = data?.data ?? [];
+  const documents = search.trim()
+    ? allDocuments.filter((d) => d.filename.toLowerCase().includes(search.trim().toLowerCase()))
+    : allDocuments;
 
   return (
     <div className="space-y-6">
@@ -580,13 +594,23 @@ export default function Documents() {
 
       {/* Document list */}
       <div className="card overflow-hidden">
-        <div className="border-b border-gray-800 px-6 py-4">
-          <h3 className="font-semibold text-white">
+        <div className="border-b border-gray-800 px-6 py-4 flex items-center gap-3">
+          <h2 className="font-semibold text-white flex-1">
             Recent Documents{" "}
             {!isLoading && (
               <span className="text-sm font-normal text-gray-500">({documents.length})</span>
             )}
-          </h3>
+          </h2>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+            <input
+              type="text"
+              placeholder="Search by filename..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="rounded-lg border border-gray-700 bg-gray-900 pl-8 pr-3 py-1.5 text-sm text-gray-300 placeholder-gray-600 focus:border-indigo-500 focus:outline-none hover:border-gray-600 transition-colors w-52"
+            />
+          </div>
         </div>
 
         {isLoading ? (
@@ -609,11 +633,19 @@ export default function Documents() {
         ) : documents.length === 0 ? (
           <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
             <div className="rounded-full bg-gray-800 p-4">
-              <Upload className="h-6 w-6 text-gray-500" />
+              {search.trim() ? (
+                <Search className="h-6 w-6 text-gray-500" />
+              ) : (
+                <Upload className="h-6 w-6 text-gray-500" />
+              )}
             </div>
-            <p className="font-medium text-gray-400">No documents yet.</p>
+            <p className="font-medium text-gray-400">
+              {search.trim() ? "No matching documents." : "No documents yet."}
+            </p>
             <p className="text-sm text-gray-500">
-              Upload your first document using the drop zone above.
+              {search.trim()
+                ? `No filenames match "${search}".`
+                : "Upload your first document using the drop zone above."}
             </p>
           </div>
         ) : (

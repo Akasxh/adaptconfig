@@ -203,10 +203,22 @@ function AdapterModal({
   );
 }
 
+const CATEGORY_PILLS = [
+  { value: "", label: "All" },
+  { value: "bureau", label: "Bureau" },
+  { value: "kyc", label: "KYC" },
+  { value: "gst", label: "GST" },
+  { value: "payment", label: "Payment" },
+  { value: "fraud", label: "Fraud" },
+  { value: "notification", label: "Notification" },
+  { value: "open_banking", label: "Open Banking" },
+];
+
 export default function Adapters() {
+  const [categoryFilter, setCategoryFilter] = useState("");
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["adapters"],
-    queryFn: () => adaptersApi.list(),
+    queryKey: ["adapters", categoryFilter],
+    queryFn: () => adaptersApi.list(categoryFilter || undefined),
   });
   const [selectedAdapter, setSelectedAdapter] = useState<Adapter | null>(null);
 
@@ -229,6 +241,26 @@ export default function Adapters() {
           Refresh
         </button>
       </div>
+
+      {/* Category filter pills */}
+      <fieldset className="flex flex-wrap gap-2">
+        <legend className="sr-only">Filter by category</legend>
+        {CATEGORY_PILLS.map((pill) => (
+          <button
+            key={pill.value}
+            type="button"
+            onClick={() => setCategoryFilter(pill.value)}
+            className={clsx(
+              "rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+              categoryFilter === pill.value
+                ? "bg-indigo-600 text-white"
+                : "border border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+            )}
+          >
+            {pill.label}
+          </button>
+        ))}
+      </fieldset>
 
       {error && (
         <div
