@@ -145,9 +145,10 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Tenant-ID", "X-Tenant-Name", "X-Tenant-Role"],
 )
 
-# Trusted host validation (production only)
-if not settings.debug:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+# Trusted host validation — disabled for cloud deployments (Railway, Render)
+# where the host header varies. CORS + auth provide sufficient protection.
+# if not settings.debug:
+#     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 # Routes
 app.include_router(health.router)
