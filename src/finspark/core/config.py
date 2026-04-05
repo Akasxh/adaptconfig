@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     jwt_expiry_minutes: int = 60
     encryption_key: str = "change-me-in-production"
 
-    # Hosting
-    allowed_hosts: list[str] = ["localhost", "127.0.0.1"]
+    # Hosting — use ["*"] for Railway/cloud deployments where host varies
+    allowed_hosts: list[str] = ["*"]
 
     # Rate limiting
     rate_limit_max_requests: int = 100
