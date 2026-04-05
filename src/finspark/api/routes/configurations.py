@@ -137,6 +137,41 @@ async def list_templates() -> APIResponse[list[ConfigTemplateResponse]]:
     return APIResponse(data=CONFIG_TEMPLATES)
 
 
+def _validate_config(full_config: dict[str, Any]) -> ConfigValidationResult:
+    """Validate a full configuration dict for completeness and correctness."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not full_config.get("base_url"):
+        errors.append("Missing base_url")
+    if not full_config.get("auth", {}).get("type"):
+        errors.append("Missing auth configuration")
+    if not full_config.get("endpoints"):
+        errors.append("No endpoints configured")
+
+    mappings = full_config.get("field_mappings", [])
+    unmapped = [m["source_field"] for m in mappings if not m.get("target_field")]
+    if unmapped:
+        warnings.append(f"{len(unmapped)} fields are unmapped")
+
+    low_conf = [m for m in mappings if m.get("confidence", 0) < 0.5 and m.get("target_field")]
+    if low_conf:
+        warnings.append(f"{len(low_conf)} mappings have low confidence")
+
+    total = len(mappings)
+    mapped = total - len(unmapped)
+    coverage = mapped / total if total > 0 else 0.0
+
+    return ConfigValidationResult(
+        is_valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+        coverage_score=round(coverage, 2),
+        missing_required_fields=[],
+        unmapped_source_fields=unmapped,
+    )
+
+
 @router.post("/batch-validate", response_model=APIResponse[list[BatchValidationItem]])
 async def batch_validate_configurations(
     body: BatchConfigRequest,
@@ -159,40 +194,10 @@ async def batch_validate_configurations(
             continue
 
         full_config = json.loads(config.full_config) if config.full_config else {}
-        errors: list[str] = []
-        warnings: list[str] = []
-
-        if not full_config.get("base_url"):
-            errors.append("Missing base_url")
-        if not full_config.get("auth", {}).get("type"):
-            errors.append("Missing auth configuration")
-        if not full_config.get("endpoints"):
-            errors.append("No endpoints configured")
-
-        mappings = full_config.get("field_mappings", [])
-        unmapped = [m["source_field"] for m in mappings if not m.get("target_field")]
-        if unmapped:
-            warnings.append(f"{len(unmapped)} fields are unmapped")
-
-        low_conf = [m for m in mappings if m.get("confidence", 0) < 0.5 and m.get("target_field")]
-        if low_conf:
-            warnings.append(f"{len(low_conf)} mappings have low confidence")
-
-        total = len(mappings)
-        mapped = total - len(unmapped)
-        coverage = mapped / total if total > 0 else 0.0
-
         items.append(
             BatchValidationItem(
                 config_id=cid,
-                result=ConfigValidationResult(
-                    is_valid=len(errors) == 0,
-                    errors=errors,
-                    warnings=warnings,
-                    coverage_score=round(coverage, 2),
-                    missing_required_fields=[],
-                    unmapped_source_fields=unmapped,
-                ),
+                result=_validate_config(full_config),
             )
         )
 
@@ -739,42 +744,8 @@ async def validate_configuration(
         raise HTTPException(status_code=404, detail="Configuration not found")
 
     full_config = json.loads(config.full_config) if config.full_config else {}
-    errors: list[str] = []
-    warnings: list[str] = []
-    missing_required: list[str] = []
 
-    # Validate structure
-    if not full_config.get("base_url"):
-        errors.append("Missing base_url")
-    if not full_config.get("auth", {}).get("type"):
-        errors.append("Missing auth configuration")
-    if not full_config.get("endpoints"):
-        errors.append("No endpoints configured")
-
-    # Validate field mappings
-    mappings = full_config.get("field_mappings", [])
-    unmapped = [m["source_field"] for m in mappings if not m.get("target_field")]
-    if unmapped:
-        warnings.append(f"{len(unmapped)} fields are unmapped")
-
-    low_conf = [m for m in mappings if m.get("confidence", 0) < 0.5 and m.get("target_field")]
-    if low_conf:
-        warnings.append(f"{len(low_conf)} mappings have low confidence")
-
-    total = len(mappings)
-    mapped = total - len(unmapped)
-    coverage = mapped / total if total > 0 else 0.0
-
-    return APIResponse(
-        data=ConfigValidationResult(
-            is_valid=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
-            coverage_score=round(coverage, 2),
-            missing_required_fields=missing_required,
-            unmapped_source_fields=unmapped,
-        ),
-    )
+    return APIResponse(data=_validate_config(full_config))
 
 
 @router.post("/{config_id}/transition", response_model=APIResponse[TransitionResponse])

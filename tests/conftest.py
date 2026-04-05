@@ -28,7 +28,7 @@ from finspark.core.database import get_db
 from finspark.main import app
 from finspark.models.base import Base
 
-# In-memory SQLite with StaticPool — avoids file corruption and is fast
+# In-memory SQLite with StaticPool -- avoids file corruption and is fast
 TEST_DB_URL = "sqlite+aiosqlite://"
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -62,6 +62,15 @@ async def setup_database():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_rate_limiter():
+    """Reset the global rate limiter before each test to avoid 429 errors."""
+    from finspark.core.rate_limiter import rate_limiter
+
+    await rate_limiter.reset()
     yield
 
 

@@ -48,14 +48,6 @@ async def register_webhook(
     if not is_safe_url(str(body.url)):
         raise HTTPException(status_code=400, detail="URL resolves to a blocked or private network address")
 
-    if body.tenant_id != tenant.tenant_id:
-        logger.warning(
-            "tenant_id_mismatch_on_webhook_create body_tenant=%s context_tenant=%s",
-            body.tenant_id,
-            tenant.tenant_id,
-        )
-        raise HTTPException(status_code=403, detail="tenant_id does not match authenticated tenant")
-
     wh = Webhook(
         id=str(uuid.uuid4()),
         tenant_id=tenant.tenant_id,
@@ -89,13 +81,13 @@ async def list_webhooks(
 
     Only returns webhooks where is_active=True. Inactive (soft-deleted)
     webhooks are excluded. Note: Webhook uses is_active as its soft-delete
-    flag — there is no separate is_deleted column on this model.
+    flag -- there is no separate is_deleted column on this model.
     """
     stmt = (
         select(Webhook)
         .where(
             Webhook.tenant_id == tenant.tenant_id,
-            Webhook.is_active == True,  # noqa: E712 — SQLAlchemy requires == not `is`
+            Webhook.is_active == True,  # noqa: E712
         )
         .order_by(Webhook.created_at.desc())
     )

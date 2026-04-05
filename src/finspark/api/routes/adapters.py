@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from finspark.api.dependencies import get_adapter_registry, get_deprecation_tracker
+from finspark.core.json_utils import safe_json_loads
 from finspark.schemas.adapters import (
     AdapterEndpoint,
     AdapterListResponse,
@@ -33,7 +34,7 @@ async def list_adapters(
     for a in adapters:
         versions = []
         for v in a.versions:
-            endpoints = json.loads(v.endpoints) if v.endpoints else []
+            endpoints = safe_json_loads(v.endpoints, [])
             versions.append(
                 AdapterVersionResponse(
                     id=v.id,

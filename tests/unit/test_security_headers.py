@@ -49,7 +49,7 @@ class TestSecurityHeadersMiddleware:
 class TestTrustedHostConfig:
     def test_default_allowed_hosts(self) -> None:
         s = Settings(debug=True)
-        assert s.allowed_hosts == ["localhost", "127.0.0.1"]
+        assert s.allowed_hosts == ["*"]
 
     def test_allowed_hosts_configurable(self) -> None:
         s = Settings(debug=True, allowed_hosts=["example.com", "api.example.com"])

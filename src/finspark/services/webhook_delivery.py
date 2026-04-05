@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finspark.core.database import async_session_factory
+from finspark.core.json_utils import safe_json_loads
 from finspark.core.security import decrypt_value
 from finspark.core.url_validator import is_safe_url
 from finspark.models.webhook import Webhook, WebhookDelivery
@@ -32,11 +33,11 @@ async def deliver_event(tenant_id: str, event_type: str, payload: dict[str, Any]
         )
         webhooks = result.scalars().all()
 
-        matching_webhooks = [
-            wh for wh in webhooks
-            if event_type in (json.loads(wh.events) if isinstance(wh.events, str) else wh.events)
-            or "*" in (json.loads(wh.events) if isinstance(wh.events, str) else wh.events)
-        ]
+        matching_webhooks = []
+        for wh in webhooks:
+            events = safe_json_loads(wh.events, []) if isinstance(wh.events, str) else (wh.events or [])
+            if event_type in events or "*" in events:
+                matching_webhooks.append(wh)
 
         tasks = [_send_webhook(db, wh, event_type, payload) for wh in matching_webhooks]
         await asyncio.gather(*tasks, return_exceptions=True)

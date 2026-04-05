@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
+from finspark.core.json_utils import safe_json_loads
 from finspark.core.audit import AuditService
 from finspark.core.database import async_session_factory, get_db
 from finspark.models.configuration import Configuration
@@ -44,10 +45,8 @@ async def list_simulations(
     for sim in sims:
         steps = []
         if sim.results:
-            try:
-                steps = [SimulationStepResult(**s) for s in json.loads(sim.results)]
-            except (json.JSONDecodeError, TypeError):
-                steps = []
+            parsed = safe_json_loads(sim.results, [])
+            steps = [SimulationStepResult(**s) for s in parsed]
         data.append(
             SimulationResponse(
                 id=sim.id,
@@ -84,7 +83,7 @@ async def run_simulation(
     if not config or not config.full_config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    full_config = json.loads(config.full_config)
+    full_config = safe_json_loads(config.full_config, {})
 
     # Create simulation record
     simulation = Simulation(
@@ -180,7 +179,7 @@ async def get_simulation(
 
     steps = []
     if simulation.results:
-        steps = [SimulationStepResult(**s) for s in json.loads(simulation.results)]
+        steps = [SimulationStepResult(**s) for s in safe_json_loads(simulation.results, [])]
 
     return APIResponse(
         data=SimulationResponse(

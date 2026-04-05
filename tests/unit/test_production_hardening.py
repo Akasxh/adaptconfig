@@ -255,10 +255,10 @@ class TestGeminiClientLifecycle:
         try:
             from finspark.main import lifespan, app
 
-            # We need to mock init_db and _seed_adapters to avoid DB setup
+            # We need to mock init_db and seed_adapters to avoid DB setup
             with (
                 patch("finspark.main.init_db", new_callable=AsyncMock),
-                patch("finspark.main._seed_adapters", new_callable=AsyncMock),
+                patch("finspark.main.seed_adapters", new_callable=AsyncMock),
                 patch("finspark.main.settings") as mock_settings,
             ):
                 mock_settings.debug = True
