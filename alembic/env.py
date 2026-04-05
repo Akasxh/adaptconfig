@@ -17,6 +17,7 @@ from finspark.models import configuration  # noqa: F401
 from finspark.models import document  # noqa: F401
 from finspark.models import simulation  # noqa: F401
 from finspark.models import tenant  # noqa: F401
+from finspark.models import user  # noqa: F401
 from finspark.models import webhook  # noqa: F401
 
 # Alembic Config object
