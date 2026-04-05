@@ -29,6 +29,7 @@ class AdapterCategory(str, Enum):
     FRAUD = "fraud"
     NOTIFICATION = "notification"
     OPEN_BANKING = "open_banking"
+    CUSTOM = "custom"
 
 
 class ConfigStatus(str, Enum):

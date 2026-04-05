@@ -145,6 +145,12 @@ export const adaptersApi = {
         `/api/v1/adapters/${adapterId}/versions/${version}/deprecation`
       )
       .then((r) => r.data),
+  createFromDocument: (documentId: string, name: string, category: string) =>
+    api
+      .post<APIResponse<Adapter>>("/api/v1/adapters/from-document", null, {
+        params: { document_id: documentId, name, category },
+      })
+      .then((r) => r.data),
 };
 
 export const documentsApi = {
@@ -342,18 +348,13 @@ interface WebhookTestResult {
 }
 
 export const webhooksApi = {
-  list: () =>
-    api.get<APIResponse<WebhookEntry[]>>("/api/v1/webhooks/").then((r) => r.data),
+  list: () => api.get<APIResponse<WebhookEntry[]>>("/api/v1/webhooks/").then((r) => r.data),
   create: (data: { url: string; events: string[]; secret: string }) =>
     api.post<APIResponse<WebhookEntry>>("/api/v1/webhooks/", data).then((r) => r.data),
   delete: (id: string) =>
     api.delete<APIResponse<null>>(`/api/v1/webhooks/${id}`).then((r) => r.data),
   test: (id: string) =>
-    api.post<APIResponse<WebhookTestResult>>(
-      `/api/v1/webhooks/${id}/test`,
-      {}
-      )
-      .then((r) => r.data),
+    api.post<APIResponse<WebhookTestResult>>(`/api/v1/webhooks/${id}/test`, {}).then((r) => r.data),
 };
 
 export default api;

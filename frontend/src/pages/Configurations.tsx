@@ -34,6 +34,35 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+// ── Adapter categories for "create from document" form ───────────────────────
+const ADAPTER_CATEGORIES = [
+  "custom", "bureau", "kyc", "gst", "payment", "fraud", "notification", "open_banking",
+] as const;
+
+// ── Match score helper (client-side, mirrors backend logic) ──────────────────
+function computeAdapterMatchScore(
+  parsedResult: Record<string, unknown>,
+  adapters: Adapter[]
+): number {
+  const endpoints = (parsedResult.endpoints as Array<{ path: string }> | undefined) ?? [];
+  const docEndpoints = new Set(endpoints.map((e) => e.path));
+
+  let best = 0;
+  for (const adapter of adapters) {
+    for (const av of adapter.versions) {
+      const avEndpoints = new Set(av.endpoints.map((e) => e.path));
+      const endpointUnion = new Set([...docEndpoints, ...avEndpoints]);
+      const endpointIntersect = [...docEndpoints].filter((p) => avEndpoints.has(p)).length;
+      const endpointScore = endpointUnion.size > 0 ? endpointIntersect / endpointUnion.size : 0;
+
+      // field overlap not easily computed client-side (request_schema not exposed), use 0
+      const score = endpointScore * 0.6;
+      if (score > best) best = score;
+    }
+  }
+  return best;
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_STEPS = ["draft", "configured", "validating", "testing", "active"] as const;
@@ -791,12 +820,41 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
   const [adapterVersionId, setAdapterVersionId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // "create adapter from document" inline form state
+  const [showCreateAdapter, setShowCreateAdapter] = useState(false);
+  const [newAdapterName, setNewAdapterName] = useState("");
+  const [newAdapterCategory, setNewAdapterCategory] = useState<string>("custom");
+  const [noMatchBanner, setNoMatchBanner] = useState(false);
+
   const { data: docsData } = useQuery({ queryKey: ["documents"], queryFn: () => documentsApi.list() });
-  const { data: adaptersData } = useQuery({ queryKey: ["adapters"], queryFn: () => adaptersApi.list() });
+  const { data: adaptersData, refetch: refetchAdapters } = useQuery({ queryKey: ["adapters"], queryFn: () => adaptersApi.list() });
 
   const docs = docsData?.data ?? [];
   const adapters: Adapter[] = adaptersData?.data?.adapters ?? [];
   const selectedAdapter = adapters.find((a) => a.id === selectedAdapterId);
+
+  // Fetch document detail when a document is selected (for parsed_result)
+  const { data: docDetailData } = useQuery({
+    queryKey: ["document-detail", documentId],
+    queryFn: () => documentsApi.get(documentId),
+    enabled: !!documentId,
+  });
+
+  // Compute match score when document detail loads
+  useEffect(() => {
+    if (!documentId) {
+      setNoMatchBanner(false);
+      setShowCreateAdapter(false);
+      return;
+    }
+    const parsed = docDetailData?.data?.parsed_result;
+    if (!parsed || adapters.length === 0) return;
+    const score = computeAdapterMatchScore(parsed as Record<string, unknown>, adapters);
+    setNoMatchBanner(score < 0.30);
+    if (score >= 0.30) {
+      setShowCreateAdapter(false);
+    }
+  }, [documentId, docDetailData, adapters]);
 
   const generateMutation = useMutation({
     mutationFn: configurationsApi.generate,
@@ -808,11 +866,38 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
     onError: (err: Error) => { setError(err.message ?? "Generation failed."); },
   });
 
+  const createAdapterMutation = useMutation({
+    mutationFn: () => adaptersApi.createFromDocument(documentId, newAdapterName.trim(), newAdapterCategory),
+    onSuccess: (resp) => {
+      const created = resp.data;
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+      refetchAdapters().then(() => {
+        if (created) {
+          setSelectedAdapterId(created.id);
+          const firstVersion = created.versions[0];
+          if (firstVersion) setAdapterVersionId(firstVersion.id);
+          if (!name) setName(`${created.name} Integration`);
+        }
+      });
+      setShowCreateAdapter(false);
+      setNoMatchBanner(false);
+      const endpointCount = created?.versions[0]?.endpoints.length ?? 0;
+      toast(`Adapter '${newAdapterName.trim()}' created with ${endpointCount} endpoint${endpointCount !== 1 ? "s" : ""}.`, "success");
+    },
+    onError: () => { toast("Failed to create adapter.", "error"); },
+  });
+
   const handleAdapterChange = (id: string) => {
     setSelectedAdapterId(id);
     setAdapterVersionId("");
     const adapter = adapters.find((a) => a.id === id);
     if (adapter && !name) setName(`${adapter.name} Integration`);
+  };
+
+  const handleDocumentChange = (id: string) => {
+    setDocumentId(id);
+    setNoMatchBanner(false);
+    setShowCreateAdapter(false);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -840,12 +925,124 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
 
       <TemplatesSection onSelect={(tplName) => setName(tplName)} />
 
+      {/* No-match banner */}
+      {noMatchBanner && !showCreateAdapter && (
+        <div
+          className="animate-fade-in"
+          style={{
+            display: "flex", alignItems: "center", gap: 12,
+            marginTop: 16, padding: "12px 16px",
+            borderRadius: 8, border: "1px solid rgba(217,119,6,0.35)",
+            background: "rgba(217,119,6,0.06)",
+          }}
+        >
+          <AlertCircle style={{ width: 15, height: 15, color: "var(--color-warning-text)", flexShrink: 0 }} />
+          <span style={{ flex: 1, fontSize: 13, color: "var(--color-warning-text)" }}>
+            No matching adapter found for this document.
+          </span>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ fontSize: 12, padding: "5px 12px", flexShrink: 0 }}
+            onClick={() => setShowCreateAdapter(true)}
+          >
+            <Plus style={{ width: 13, height: 13 }} />
+            Create New Adapter
+          </button>
+        </div>
+      )}
+
+      {/* Inline create-adapter form */}
+      {showCreateAdapter && (
+        <div
+          className="animate-fade-in"
+          style={{
+            marginTop: 16, padding: 16,
+            borderRadius: 8, border: "1px solid var(--color-border-strong)",
+            background: "var(--color-bg-base)",
+            display: "flex", flexDirection: "column", gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)" }}>
+              Create Adapter from Document
+            </span>
+            <button
+              type="button"
+              onClick={() => { setShowCreateAdapter(false); setNoMatchBanner(true); }}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-text-muted)", padding: 4 }}
+            >
+              <X style={{ width: 14, height: 14 }} />
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label htmlFor="new-adapter-name" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+                Adapter Name
+              </label>
+              <input
+                id="new-adapter-name"
+                type="text"
+                value={newAdapterName}
+                onChange={(e) => setNewAdapterName(e.target.value)}
+                placeholder="e.g. UPI Payment Gateway"
+                style={inputStyle}
+                onFocus={focusStyle}
+                onBlur={blurStyle}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="new-adapter-category" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+                Category
+              </label>
+              <select
+                id="new-adapter-category"
+                value={newAdapterCategory}
+                onChange={(e) => setNewAdapterCategory(e.target.value)}
+                style={inputStyle}
+                onFocus={focusStyle}
+                onBlur={blurStyle}
+              >
+                {ADAPTER_CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ fontSize: 12, padding: "5px 12px" }}
+              onClick={() => { setShowCreateAdapter(false); setNoMatchBanner(true); }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              style={{ fontSize: 12, padding: "5px 12px" }}
+              disabled={!newAdapterName.trim() || createAdapterMutation.isPending}
+              onClick={() => createAdapterMutation.mutate()}
+            >
+              {createAdapterMutation.isPending
+                ? <><Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} /> Creating...</>
+                : <><Plus style={{ width: 13, height: 13 }} /> Create Adapter</>
+              }
+            </button>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
         <div>
           <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
             Document
           </label>
-          <select value={documentId} onChange={(e) => setDocumentId(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
+          <select value={documentId} onChange={(e) => handleDocumentChange(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
             <option value="">Select document...</option>
             {docs.map((doc) => (
               <option key={doc.id} value={doc.id}>{doc.filename} ({doc.status})</option>
