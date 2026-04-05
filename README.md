@@ -14,7 +14,13 @@
 
 **FinSpark Hackathon** · IIT Patna · April 2026
 
-**Team:** Akash Kumar
+**Team Nucleolus**
+
+| Name | Department |
+|------|-----------|
+| **S Akash** (Team Lead) | EE, IIT Patna |
+| **Swayam Jain** | EE, IIT Patna |
+| **Yash Kamdar** | AI&ML, IIT Patna |
 
 </div>
 
