@@ -133,8 +133,22 @@ AdaptConfig uses **Google Gemini 3** to parse API specifications, automatically 
 
 ## Quick Start
 
+### Docker (one command)
+
 ```bash
-# Clone
+git clone https://github.com/Akasxh/adaptconfig.git && cd adaptconfig
+
+# Optional: set Gemini API key for AI features (works without it using rule-based fallback)
+export FINSPARK_GEMINI_API_KEY=your-key-here
+
+docker compose up --build
+```
+
+**Frontend:** http://localhost:3000 · **API Docs:** http://localhost:8000/docs
+
+### Local Development
+
+```bash
 git clone https://github.com/Akasxh/adaptconfig.git && cd adaptconfig
 
 # Backend
@@ -146,7 +160,7 @@ uv run uvicorn finspark.main:app --reload --port 8000
 cd frontend && npm ci && npm run dev
 ```
 
-Open **http://localhost:5173** · API docs at **http://localhost:8000/docs**
+**Frontend:** http://localhost:5173 · **API Docs:** http://localhost:8000/docs
 
 ## Test Documents
 
