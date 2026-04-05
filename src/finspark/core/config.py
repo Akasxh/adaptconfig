@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Hosting — use ["*"] for Railway/cloud deployments where host varies
     allowed_hosts: list[str] = ["*"]
 
+    # CORS — origins allowed to make cross-origin requests
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
     # Rate limiting
     rate_limit_max_requests: int = 100
     rate_limit_window_seconds: int = 60
