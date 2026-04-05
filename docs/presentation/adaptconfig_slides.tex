@@ -34,18 +34,39 @@
 
 \title{\textcolor{teal}{Adapt}Config}
 \subtitle{AI-Powered Integration Configuration Platform}
-\author{
-\textbf{S Akash} (Lead) \quad \textbf{Swayam Jain} \quad \textbf{Yash Kamdar}\\[4pt]
-{\small EE, IIT Patna \hspace{2em} EE, IIT Patna \hspace{2em} AI\&ML, IIT Patna}
-}
-\institute{Team Nucleolus \quad$\cdot$\quad FinSpark Hackathon \quad$\cdot$\quad IIT Patna}
-\date{April 2026}
+\author{}
+\institute{}
+\date{}
 
 \begin{document}
 
 % ── 1. TITLE ─────────────────────────────────────────────────────────────────
 \begin{frame}[plain]
-\maketitle
+\vspace{1.2cm}
+\begin{center}
+{\Huge\bfseries \textcolor{teal}{Adapt}Config}
+
+\vspace{0.4em}
+{\large\color{ts} AI-Powered Integration Configuration Platform\\for Enterprise Lending}
+
+\vspace{1em}
+{\color{teal}\rule{6cm}{0.5pt}}
+
+\vspace{0.8em}
+{\normalsize\textbf{Team Nucleolus} \quad$\cdot$\quad IIT Patna}
+
+\vspace{0.4em}
+{\normalsize S Akash (Lead) \quad$\cdot$\quad Swayam Jain \quad$\cdot$\quad Yash Kamdar}
+
+\vspace{0.8em}
+{\small\color{ts} FinSpark Hackathon $\cdot$ April 2026}
+
+\vspace{0.5em}
+{\small\textcolor{teal}{\url{https://adaptconfig-frontend-production.up.railway.app}}}
+
+\vspace{0.2em}
+{\scriptsize\color{ts} \url{https://github.com/Akasxh/adaptconfig}}
+\end{center}
 \end{frame}
 
 % ── 2. PROBLEM ───────────────────────────────────────────────────────────────
@@ -285,7 +306,35 @@ AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy ma
 {\small\centering Immutable log of every action $\cdot$ Filter by action type \& resource $\cdot$ Pagination $\cdot$ Per-user isolation\par}
 \end{frame}
 
-% ── 14. RESULTS ──────────────────────────────────────────────────────────────
+% ── 14. WEBHOOKS ─────────────────────────────────────────────────────────────
+\begin{frame}{Webhooks \& Event System}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\includegraphics[width=\textwidth]{qa-webhooks-add-form.png}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Event-driven notifications:}
+\begin{itemize}
+\item Register webhook URLs for real-time callbacks
+\item Subscribe to events: config.created, simulation.completed, document.uploaded
+\item Test delivery with one click
+\item HMAC signature verification
+\item Delivery status tracking
+\end{itemize}
+
+\vspace{0.4em}
+\textbf{Use cases:}
+\begin{itemize}
+\item CI/CD pipeline triggers
+\item Slack/Teams notifications
+\item Audit compliance webhooks
+\item External system sync
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 15. RESULTS ──────────────────────────────────────────────────────────────
 \begin{frame}{Results}
 \begin{center}
 {\small
