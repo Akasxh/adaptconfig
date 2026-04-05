@@ -1,149 +1,169 @@
 # AdaptConfig
 
-AI-assisted integration configuration and orchestration engine for fintech systems.
+**AI-Powered Integration Configuration Platform for Enterprise Lending**
+
+> Built for **FinSpark Hackathon** | IIT Patna
+
+| | |
+|---|---|
+| **Live App** | [adaptconfig-frontend-production.up.railway.app](https://adaptconfig-frontend-production.up.railway.app) |
+| **API** | [adaptconfig-api-production.up.railway.app](https://adaptconfig-api-production.up.railway.app) |
+| **API Docs** | [Swagger UI](https://adaptconfig-api-production.up.railway.app/docs) |
+
+### Team
+
+| Name | Role |
+|---|---|
+| **Akash Kumar** | Full-Stack Developer, IIT Patna |
+
+---
 
 ## What It Does
 
-- **Document ingestion** -- upload PDF, DOCX, YAML specs and auto-extract API endpoints, field mappings, and schemas
-- **Configuration generation** -- LLM-powered config generation with lifecycle management (draft -> review -> approved -> deployed), versioning, rollback, and diff
-- **Simulation engine** -- dry-run configurations step-by-step against adapter rules before deploying to production
-- **Audit and governance** -- full audit trail, webhook notifications, and search across all resources
+Indian lending platforms integrate with 8+ external APIs (credit bureaus, KYC, payments, etc.). Each integration requires manual field mapping, auth configuration, and testing — typically taking **2-4 weeks**.
 
-## Tech Stack
-
-| Layer | Tools |
-|-------|-------|
-| Backend | Python 3.11+, FastAPI, SQLAlchemy (async), Pydantic v2, Alembic |
-| Frontend | React 18, TypeScript, Tailwind CSS v4, TanStack Query, Recharts |
-| AI | Google Gemini (gemini-3-flash-preview), sentence-transformers |
-| Database | SQLite (dev) / PostgreSQL (prod) via async drivers |
-| Testing | pytest + pytest-asyncio (backend), Vitest + Testing Library (frontend) |
-| Linting | Ruff (backend), Biome (frontend) |
-
-## Quick Start
-
-**Prerequisites:** Python 3.11+, Node.js 18+, [uv](https://docs.astral.sh/uv/)
-
-```bash
-# 1. Clone and set up environment
-git clone https://github.com/Akasxh/adaptconfig.git && cd adaptconfig
-cp .env.example .env
-# Edit .env -- set FINSPARK_SECRET_KEY and optionally FINSPARK_GEMINI_API_KEY
-
-# 2. Install and run the backend
-uv sync
-uv run alembic upgrade head
-uv run uvicorn finspark.api.main:app --reload --port 8000
-
-# 3. Install and run the frontend (new terminal)
-cd frontend && npm install && npm run dev
-```
-
-Open `http://localhost:5173` for the UI, `http://localhost:8000/docs` for Swagger.
-
-## Project Structure
+**AdaptConfig automates this entire process:**
 
 ```
-finspark/
-├── src/finspark/              # Backend source
-│   ├── api/
-│   │   ├── main.py            # FastAPI app entry point
-│   │   └── routes/            # Route handlers (10 modules)
-│   ├── core/                  # Config, database, security
-│   ├── models/                # SQLAlchemy models
-│   ├── schemas/               # Pydantic request/response schemas
-│   └── services/              # Business logic, LLM client
-├── frontend/src/
-│   ├── pages/                 # 8 page components
-│   ├── components/            # Shared UI (Layout, Pagination)
-│   ├── hooks/                 # React Query hooks
-│   ├── lib/                   # API client, utilities
-│   └── types/                 # TypeScript type definitions
-├── alembic/                   # Database migrations
-├── tests/                     # Backend test suite
-└── docker-compose.yml         # Container orchestration
+Upload API Spec → AI Parses Fields → Generate Config → Simulate & Test → Deploy
 ```
 
-## API Overview
+### Live Demo Results
 
-All endpoints prefixed with `/api/v1`. Responses use a standard `APIResponse` wrapper.
+Tested on production with the CIBIL Bureau API v2 specification:
 
-| Resource | Method | Endpoint | Description |
-|----------|--------|----------|-------------|
-| **Health** | `GET` | `/health` | Service health check |
-| **Documents** | `POST` | `/documents/upload` | Upload PDF/DOCX/YAML |
-| | `GET` | `/documents/` | List all documents |
-| | `GET` | `/documents/{id}` | Document detail with extracted data |
-| | `DELETE` | `/documents/{id}` | Delete a document |
-| **Configurations** | `POST` | `/configurations/generate` | LLM-generate config from adapter + document |
-| | `GET` | `/configurations/` | List configurations |
-| | `GET` | `/configurations/{id}` | Config detail |
-| | `PATCH` | `/configurations/{id}` | Update config fields |
-| | `POST` | `/configurations/{id}/validate` | Validate against schema rules |
-| | `POST` | `/configurations/{id}/transition` | Lifecycle state transition |
-| | `GET` | `/configurations/{id}/history` | Version history |
-| | `POST` | `/configurations/{id}/rollback` | Rollback to previous version |
-| | `GET` | `/configurations/{id}/export` | Export as JSON/YAML |
-| | `GET` | `/configurations/{a}/diff/{b}` | Diff two configurations |
-| | `GET` | `/configurations/templates` | List config templates |
-| | `GET` | `/configurations/summary` | Aggregate stats |
-| | `POST` | `/configurations/batch-validate` | Validate multiple configs |
-| | `POST` | `/configurations/batch-simulate` | Simulate multiple configs |
-| **Adapters** | `GET` | `/adapters/` | List integration adapters |
-| | `GET` | `/adapters/{id}` | Adapter detail |
-| | `GET` | `/adapters/{id}/match` | Match adapter to document fields |
-| **Simulations** | `POST` | `/simulations/run` | Run simulation against config |
-| | `GET` | `/simulations/` | List simulations |
-| | `GET` | `/simulations/{id}` | Simulation detail with steps |
-| | `GET` | `/simulations/{id}/stream` | SSE stream of simulation progress |
-| **Webhooks** | `POST` | `/webhooks/` | Register webhook |
-| | `GET` | `/webhooks/` | List webhooks |
-| | `DELETE` | `/webhooks/{id}` | Remove webhook |
-| | `POST` | `/webhooks/{id}/test` | Send test delivery |
-| **Search** | `GET` | `/search/` | Full-text search across resources |
-| **Audit** | `GET` | `/audit/` | Paginated audit log with filters |
-| **Analytics** | `GET` | `/analytics/dashboard` | Dashboard metrics |
-| | `GET` | `/analytics/health` | System health metrics |
-| | `GET` | `/metrics` | Prometheus-style metrics |
+| Step | Result |
+|---|---|
+| Document parsing | **4 endpoints, 28 fields, 2 auth schemes** extracted at **95% confidence** |
+| Config generation | **28/28 fields mapped** at **100% confidence** via Gemini 3 + rule engine |
+| Simulation | **8/8 tests PASSED** (structure, mappings, endpoints, auth, hooks) |
+
+---
 
 ## Screenshots
 
-The frontend uses a Deep Slate + Steel Blue fintech design system with IBM Plex Sans/Mono typography. Navigation groups pages into Core (Dashboard, Documents, Search), Integrations (Adapters, Configurations, Simulations), and Governance (Webhooks, Audit Log).
+### Dashboard
+Real-time metrics with glassmorphism design — adapter count, config summary, activity charts.
 
-See `docs/screenshots/` for UI captures.
+![Dashboard](docs/presentation/screenshots/01-dashboard.png)
 
-## Testing
+### Document Upload & Parsing
+Drag & drop YAML/PDF/DOCX specs. Parser extracts endpoints, fields, auth schemes automatically.
 
-```bash
-# Backend (850+ tests, ~82% coverage)
-uv run pytest
-uv run pytest --cov-report=html    # HTML coverage report
+![Document Upload](docs/presentation/screenshots/03-document-uploaded.png)
 
-# Frontend
-cd frontend
-npm run test:run                    # Run once
-npm run test:coverage               # With coverage
+### Parsed Document Detail
+5-tab modal showing extracted data: Summary, Endpoints, Fields (28 with types/required), Auth, Raw JSON.
 
-# Linting
-uv run ruff check src/              # Backend
-cd frontend && npm run lint         # Frontend
+![Document Detail](docs/presentation/screenshots/04-document-detail-modal.png)
+
+### AI-Powered Config Generation
+Select document + adapter from dropdowns. Gemini 3 generates config, rule engine augments with confidence scores.
+
+![Config Generation](docs/presentation/screenshots/08-config-form-filled.png)
+
+### Field Mappings with Confidence
+Editable field mapping table with color-coded confidence bars, transform dropdowns, lifecycle stepper.
+
+![Field Mappings](docs/presentation/screenshots/09-config-generated.png)
+
+### Simulation Results
+8/8 smoke tests pass — config structure, field mapping coverage, each endpoint, auth, and hooks validated.
+
+![Simulation](docs/presentation/screenshots/12-simulation-results.png)
+
+### Adapter Catalog
+8 pre-built Indian fintech adapters with category filtering and version detail.
+
+![Adapters](docs/presentation/screenshots/15-adapters-page.png)
+
+### Audit Trail
+Immutable audit log with action/resource filters and pagination.
+
+![Audit Log](docs/presentation/screenshots/14-audit-log.png)
+
+---
+
+## Architecture
+
+```
+┌──────────────┐     ┌───────────────────────┐     ┌──────────────┐
+│   React 18   │────▶│    FastAPI Backend     │────▶│  PostgreSQL  │
+│  TypeScript  │     │   (34 API endpoints)   │     │  (Railway)   │
+│  Tailwind    │     │                        │     └──────────────┘
+└──────────────┘     │  ┌─────────────────┐   │
+                     │  │ Document Parser  │   │     ┌──────────────┐
+                     │  │ (PDF/DOCX/YAML) │   │────▶│  Gemini 3    │
+                     │  └─────────────────┘   │     │  Flash API   │
+                     │  ┌─────────────────┐   │     └──────────────┘
+                     │  │ Config Engine    │   │
+                     │  │ (AI + Rules)     │   │
+                     │  └─────────────────┘   │
+                     │  ┌─────────────────┐   │
+                     │  │ Simulation       │   │
+                     │  │ (8 mock adapters)│   │
+                     │  └─────────────────┘   │
+                     └────────────────────────┘
 ```
 
-## Environment Variables
+## Tech Stack
 
-Copy `.env.example` to `.env` and configure:
+| Layer | Technology |
+|---|---|
+| **Frontend** | React 18, TypeScript, Tailwind CSS, Recharts |
+| **Backend** | FastAPI, SQLAlchemy (async), Pydantic v2 |
+| **AI** | Google Gemini 3 Flash (REST API) |
+| **Database** | PostgreSQL (Railway) / SQLite (dev) |
+| **Deploy** | Railway (Docker), nginx |
+| **Testing** | pytest (899 tests), vitest |
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `FINSPARK_DATABASE_URL` | Async database URI | `sqlite+aiosqlite:///./adaptconfig.db` |
-| `FINSPARK_SECRET_KEY` | App secret for signing | (required) |
-| `FINSPARK_ENCRYPTION_KEY` | Encryption key for sensitive data | (required) |
-| `FINSPARK_DEBUG` | Enable debug mode | `false` |
-| `FINSPARK_AI_ENABLED` | Enable LLM features | `false` |
-| `FINSPARK_GEMINI_API_KEY` | Google Gemini API key | -- |
-| `FINSPARK_GEMINI_MODEL` | Gemini model identifier | `gemini-3-flash-preview` |
-| `FINSPARK_OPENAI_API_KEY` | OpenAI API key (fallback) | -- |
+## Key Features
 
-## License
+- **Document Parsing**: PDF, DOCX, YAML, JSON — extracts endpoints, fields, auth, SLA requirements
+- **AI Config Generation**: Gemini 3 generates field mappings, rule engine validates with fuzzy matching
+- **8 Pre-built Adapters**: CIBIL, eKYC, GST, Payment, Fraud, SMS, Account Aggregator, Email
+- **Simulation Engine**: Mock API responses per adapter, 8-step validation pipeline
+- **Configuration Lifecycle**: Draft → Configured → Validating → Testing → Active (with rollback)
+- **Multi-tenant**: Tenant isolation, RBAC, immutable audit trail
+- **Security**: JWT auth, rate limiting, PII masking, CORS, CSP headers, path traversal protection
+- **Search**: Fuzzy search across adapters, configs, simulations
 
-MIT
+## Quick Start (Local)
+
+```bash
+git clone https://github.com/Akasxh/adaptconfig.git
+cd adaptconfig
+
+# Backend
+cp .env.example .env  # Add your GEMINI_API_KEY
+uv sync --frozen
+uv run uvicorn finspark.main:app --reload --port 8000
+
+# Frontend (new terminal)
+cd frontend && npm ci && npm run dev
+```
+
+Open http://localhost:5173
+
+## Test Documents
+
+| File | Complexity | Endpoints | Fields |
+|---|---|---|---|
+| `test_fixtures/01_simple_kyc_api.yaml` | Simple | 1 | 4 |
+| `test_fixtures/02_payment_gateway_api.yaml` | Medium | 4 | 10+ |
+| `test_fixtures/cibil_bureau_api_v2.yaml` | Complex | 4 | 28 |
+| `test_fixtures/03_account_aggregator_complex.yaml` | Advanced | 4 | 20+ |
+
+## Stats
+
+| Metric | Value |
+|---|---|
+| API Endpoints | 34 |
+| Pre-built Adapters | 8 |
+| Tests | 899 |
+| Code Coverage | 82% |
+| Frontend Pages | 8 |
+
+---
+
+See [HOW_TO_USE.md](HOW_TO_USE.md) for detailed usage instructions.
