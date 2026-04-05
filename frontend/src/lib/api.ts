@@ -319,9 +319,7 @@ export const metricsApi = {
 export const searchApi = {
   search: (q: string) =>
     api
-      .get<APIResponse<SearchResponse>>(`/api/v1/search/?q=${encodeURIComponent(q)}`, {
-        headers: { "X-Tenant-ID": "default" },
-      })
+      .get<APIResponse<SearchResponse>>(`/api/v1/search/?q=${encodeURIComponent(q)}`)
       .then((r) => r.data),
 };
 
@@ -345,29 +343,15 @@ interface WebhookTestResult {
 
 export const webhooksApi = {
   list: () =>
-    api
-      .get<APIResponse<WebhookEntry[]>>("/api/v1/webhooks/", {
-        headers: { "X-Tenant-ID": "default" },
-      })
-      .then((r) => r.data),
+    api.get<APIResponse<WebhookEntry[]>>("/api/v1/webhooks/").then((r) => r.data),
   create: (data: { url: string; events: string[]; secret: string }) =>
-    api
-      .post<APIResponse<WebhookEntry>>("/api/v1/webhooks/", data, {
-        headers: { "X-Tenant-ID": "default" },
-      })
-      .then((r) => r.data),
+    api.post<APIResponse<WebhookEntry>>("/api/v1/webhooks/", data).then((r) => r.data),
   delete: (id: string) =>
-    api
-      .delete<APIResponse<null>>(`/api/v1/webhooks/${id}`, {
-        headers: { "X-Tenant-ID": "default" },
-      })
-      .then((r) => r.data),
+    api.delete<APIResponse<null>>(`/api/v1/webhooks/${id}`).then((r) => r.data),
   test: (id: string) =>
-    api
-      .post<APIResponse<WebhookTestResult>>(
-        `/api/v1/webhooks/${id}/test`,
-        {},
-        { headers: { "X-Tenant-ID": "default" } }
+    api.post<APIResponse<WebhookTestResult>>(
+      `/api/v1/webhooks/${id}/test`,
+      {}
       )
       .then((r) => r.data),
 };
