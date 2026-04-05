@@ -49,7 +49,7 @@ function AddForm({ onClose }: { onClose: () => void }) {
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); if (url && events.length && secret) mut.mutate({ url, events, secret }); }}
+      onSubmit={(e) => { e.preventDefault(); if (url && events.length) mut.mutate({ url, events, secret: secret || "default-secret" }); }}
       className="card animate-fade-in"
       style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}
     >
