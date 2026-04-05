@@ -13,7 +13,7 @@ services:
       - FINSPARK_DATABASE_URL=sqlite+aiosqlite:///./data/adaptconfig.db
       - FINSPARK_SECRET_KEY=adaptconfig-docker-dev-secret-key-2026
       - FINSPARK_ENCRYPTION_KEY=adaptconfig-docker-dev-encryption-key-2026
-      - FINSPARK_GEMINI_API_KEY=GEMINI_KEY_REDACTED
+      - FINSPARK_GEMINI_API_KEY=${FINSPARK_GEMINI_API_KEY:-}
       - FINSPARK_GEMINI_MODEL=gemini-3-flash-preview
       - FINSPARK_AI_ENABLED=true
     restart: unless-stopped
