@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
+from finspark.core import events
 from finspark.core.json_utils import safe_json_loads
 from finspark.core.audit import AuditService
 from finspark.core.database import async_session_factory, get_db
@@ -143,6 +144,16 @@ async def run_simulation(
             "failed": failed,
         },
     )
+
+    await events.emit(events.SIMULATION_COMPLETED, {
+        "tenant_id": tenant.tenant_id,
+        "simulation_id": simulation.id,
+        "configuration_id": request.configuration_id,
+        "status": simulation.status,
+        "total_tests": total,
+        "passed_tests": passed,
+        "failed_tests": failed,
+    })
 
     return APIResponse(
         data=SimulationResponse(

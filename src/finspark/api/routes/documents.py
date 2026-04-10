@@ -13,6 +13,7 @@ from finspark.api.dependencies import (
     get_tenant_context,
     require_role,
 )
+from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
@@ -108,6 +109,14 @@ async def upload_document(
         doc.error_message = str(e)
 
     await db.flush()
+
+    if doc.status == "parsed":
+        await events.emit(events.DOCUMENT_PARSED, {
+            "tenant_id": tenant.tenant_id,
+            "document_id": doc.id,
+            "filename": doc.filename,
+            "doc_type": doc_type,
+        })
 
     await audit.log(
         tenant_id=tenant.tenant_id,

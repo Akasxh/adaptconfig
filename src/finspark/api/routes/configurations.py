@@ -52,6 +52,7 @@ from finspark.schemas.configurations import (
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
+from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
 from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
@@ -345,6 +346,14 @@ async def rollback_configuration(
 
     await db.flush()
 
+    await events.emit(events.CONFIG_ROLLED_BACK, {
+        "tenant_id": tenant.tenant_id,
+        "config_id": config_id,
+        "config_name": config.name,
+        "previous_version": previous_version,
+        "restored_version": restored.version,
+    })
+
     return APIResponse(
         data=RollbackResponse(
             id=restored.id,
@@ -619,6 +628,14 @@ async def generate_configuration(
         },
     )
 
+    await events.emit(events.CONFIG_CREATED, {
+        "tenant_id": tenant.tenant_id,
+        "config_id": configuration.id,
+        "config_name": configuration.name,
+        "generation_path": generation_path,
+        "adapter_version_id": request.adapter_version_id,
+    })
+
     field_mappings = config.get("field_mappings", [])
 
     return APIResponse(
@@ -807,6 +824,23 @@ async def transition_configuration(
     )
 
     await db.flush()
+
+    if body.target_state.value == "active":
+        await events.emit(events.CONFIG_DEPLOYED, {
+            "tenant_id": tenant.tenant_id,
+            "config_id": config.id,
+            "config_name": config.name,
+            "previous_state": previous_state.value,
+            "new_state": body.target_state.value,
+        })
+    else:
+        await events.emit(events.CONFIG_UPDATED, {
+            "tenant_id": tenant.tenant_id,
+            "config_id": config.id,
+            "config_name": config.name,
+            "previous_state": previous_state.value,
+            "new_state": body.target_state.value,
+        })
 
     return APIResponse(
         data=TransitionResponse(
