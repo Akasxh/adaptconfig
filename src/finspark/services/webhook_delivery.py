@@ -23,32 +23,44 @@ logger = logging.getLogger(__name__)
 
 
 async def deliver_event(tenant_id: str, event_type: str, payload: dict[str, Any]) -> None:
-    """Deliver an event to all matching webhooks for a tenant."""
-    # Yield control to let the calling route's transaction commit first.
-    # Without this, SQLite's single-writer lock causes "database is locked"
-    # because deliver_event opens a new session while the route's is still open.
-    # This delay is harmless — webhook delivery is inherently async/background.
-    await asyncio.sleep(1.0)
+    """Deliver an event to all matching webhooks for a tenant.
 
-    async with async_session_factory() as db:
-        result = await db.execute(
-            select(Webhook).where(
-                Webhook.tenant_id == tenant_id,
-                Webhook.is_active == True,  # noqa: E712
+    Called via FastAPI BackgroundTasks, which runs AFTER the response is sent
+    and the DB transaction is committed — no sleep/timing hacks needed.
+    Also safe to call via asyncio.create_task when the DB commit has already happened
+    (e.g., inside streaming response generators).
+    """
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Webhook).where(
+                    Webhook.tenant_id == tenant_id,
+                    Webhook.is_active == True,  # noqa: E712
+                )
             )
-        )
-        webhooks = result.scalars().all()
+            webhooks = result.scalars().all()
 
-        matching_webhooks = []
-        for wh in webhooks:
-            events = safe_json_loads(wh.events, []) if isinstance(wh.events, str) else (wh.events or [])
-            if event_type in events or "*" in events:
-                matching_webhooks.append(wh)
+            matching_webhooks = []
+            for wh in webhooks:
+                events = safe_json_loads(wh.events, []) if isinstance(wh.events, str) else (wh.events or [])
+                if event_type in events or "*" in events:
+                    matching_webhooks.append(wh)
 
-        tasks = [_send_webhook(db, wh, event_type, payload) for wh in matching_webhooks]
-        await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(
+                *[_send_webhook(db, wh, event_type, payload) for wh in matching_webhooks],
+                return_exceptions=True,
+            )
+            for wh, res in zip(matching_webhooks, results):
+                if isinstance(res, Exception):
+                    logger.error(
+                        "Webhook delivery failed for webhook_id=%s event=%s: %s",
+                        wh.id, event_type, res,
+                        exc_info=res,
+                    )
 
-        await db.commit()
+            await db.commit()
+    except Exception:
+        logger.exception("deliver_event failed for tenant=%s event=%s", tenant_id, event_type)
 
 
 async def _send_webhook(
@@ -88,24 +100,24 @@ async def _send_webhook(
     await db.flush()
 
     max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        delivery.attempts = attempt
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for attempt in range(1, max_attempts + 1):
+            delivery.attempts = attempt
+            try:
                 resp = await client.post(webhook.url, content=body, headers=headers)
                 delivery.response_code = resp.status_code
                 if 200 <= resp.status_code < 300:
                     delivery.status = "delivered"
                     return
-        except httpx.RequestError as e:
-            logger.warning(
-                "Webhook delivery attempt %d/%d failed for %s: %s",
-                attempt,
-                max_attempts,
-                webhook.id,
-                str(e),
-            )
-        if attempt < max_attempts:
-            await asyncio.sleep(2 ** attempt)  # 2s, 4s backoff
+            except httpx.RequestError as e:
+                logger.warning(
+                    "Webhook delivery attempt %d/%d failed for %s: %s",
+                    attempt,
+                    max_attempts,
+                    webhook.id,
+                    str(e),
+                )
+            if attempt < max_attempts:
+                await asyncio.sleep(2 ** attempt)  # 2s, 4s backoff
 
     delivery.status = "failed"

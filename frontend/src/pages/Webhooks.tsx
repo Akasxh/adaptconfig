@@ -4,8 +4,10 @@ import { Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { useState } from "react";
 
 const ALL_EVENTS = [
-  "config.created", "config.updated", "config.deployed", "simulation.passed",
-  "simulation.failed", "document.uploaded", "document.parsed", "webhook.test",
+  "config.created", "config.updated", "config.deployed", "config.rolled_back",
+  "document.uploaded", "document.parsed",
+  "simulation.completed", "simulation.passed", "simulation.failed",
+  "webhook.test",
 ] as const;
 
 type EventType = (typeof ALL_EVENTS)[number];

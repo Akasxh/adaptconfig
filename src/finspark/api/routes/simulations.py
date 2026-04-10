@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from finspark.schemas.simulations import (
     SimulationStepResult,
 )
 from finspark.services.simulation.simulator import IntegrationSimulator
+from finspark.services.webhook_delivery import deliver_event
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
 
@@ -68,6 +69,7 @@ async def list_simulations(
 @router.post("/run", response_model=APIResponse[SimulationResponse])
 async def run_simulation(
     request: RunSimulationRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
     simulator: IntegrationSimulator = Depends(get_simulator),
@@ -145,7 +147,7 @@ async def run_simulation(
         },
     )
 
-    await events.emit(events.SIMULATION_COMPLETED, {
+    sim_event_data = {
         "tenant_id": tenant.tenant_id,
         "simulation_id": simulation.id,
         "configuration_id": request.configuration_id,
@@ -153,7 +155,14 @@ async def run_simulation(
         "total_tests": total,
         "passed_tests": passed,
         "failed_tests": failed,
-    })
+    }
+    await events.emit(events.SIMULATION_COMPLETED, sim_event_data)
+    background_tasks.add_task(deliver_event, tenant.tenant_id, events.SIMULATION_COMPLETED, sim_event_data)
+
+    # Granular pass/fail events for webhook subscribers
+    specific_event = events.SIMULATION_PASSED if simulation.status == "passed" else events.SIMULATION_FAILED
+    await events.emit(specific_event, sim_event_data)
+    background_tasks.add_task(deliver_event, tenant.tenant_id, specific_event, sim_event_data)
 
     return APIResponse(
         data=SimulationResponse(
@@ -382,6 +391,22 @@ async def stream_simulation(
                 fresh_db.add(sim_step)
 
             await fresh_db.commit()
+
+        # Deliver webhook events — DB is already committed so create_task is safe here
+        sim_event_data = {
+            "tenant_id": tenant_id,
+            "simulation_id": sim_id,
+            "configuration_id": config_id,
+            "status": sim_row.status,
+            "total_tests": total,
+            "passed_tests": passed_count,
+            "failed_tests": failed_count,
+        }
+        await events.emit(events.SIMULATION_COMPLETED, sim_event_data)
+        asyncio.create_task(deliver_event(tenant_id, events.SIMULATION_COMPLETED, sim_event_data))
+        specific = events.SIMULATION_PASSED if failed_count == 0 else events.SIMULATION_FAILED
+        await events.emit(specific, sim_event_data)
+        asyncio.create_task(deliver_event(tenant_id, specific, sim_event_data))
 
         yield f'event: done\ndata: {{"total_steps": {step_index}}}\n\n'
 

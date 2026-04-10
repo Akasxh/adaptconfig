@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +57,7 @@ from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionE
 from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
+from finspark.services.webhook_delivery import deliver_event
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,7 @@ async def list_configuration_history(
 async def rollback_configuration(
     config_id: str,
     body: RollbackRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin"),
     rollback_mgr: RollbackManager = Depends(get_rollback_manager),
@@ -346,13 +348,15 @@ async def rollback_configuration(
 
     await db.flush()
 
-    await events.emit(events.CONFIG_ROLLED_BACK, {
+    rollback_data = {
         "tenant_id": tenant.tenant_id,
         "config_id": config_id,
         "config_name": config.name,
         "previous_version": previous_version,
         "restored_version": restored.version,
-    })
+    }
+    await events.emit(events.CONFIG_ROLLED_BACK, rollback_data)
+    background_tasks.add_task(deliver_event, tenant.tenant_id, events.CONFIG_ROLLED_BACK, rollback_data)
 
     return APIResponse(
         data=RollbackResponse(
@@ -484,6 +488,7 @@ def _augment_with_rule_based(
 @router.post("/generate", response_model=APIResponse[ConfigurationResponse])
 async def generate_configuration(
     request: GenerateConfigRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
     generator: ConfigGenerator = Depends(get_config_generator),
@@ -637,13 +642,15 @@ async def generate_configuration(
         },
     )
 
-    await events.emit(events.CONFIG_CREATED, {
+    config_created_data = {
         "tenant_id": tenant.tenant_id,
         "config_id": configuration.id,
         "config_name": configuration.name,
         "generation_path": generation_path,
         "adapter_version_id": request.adapter_version_id,
-    })
+    }
+    await events.emit(events.CONFIG_CREATED, config_created_data)
+    background_tasks.add_task(deliver_event, tenant.tenant_id, events.CONFIG_CREATED, config_created_data)
 
     field_mappings = config.get("field_mappings", [])
 
@@ -778,6 +785,7 @@ async def validate_configuration(
 async def transition_configuration(
     config_id: str,
     body: TransitionRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
@@ -834,22 +842,19 @@ async def transition_configuration(
 
     await db.flush()
 
+    transition_data = {
+        "tenant_id": tenant.tenant_id,
+        "config_id": config.id,
+        "config_name": config.name,
+        "previous_state": previous_state.value,
+        "new_state": body.target_state.value,
+    }
     if body.target_state.value == "active":
-        await events.emit(events.CONFIG_DEPLOYED, {
-            "tenant_id": tenant.tenant_id,
-            "config_id": config.id,
-            "config_name": config.name,
-            "previous_state": previous_state.value,
-            "new_state": body.target_state.value,
-        })
+        await events.emit(events.CONFIG_DEPLOYED, transition_data)
+        background_tasks.add_task(deliver_event, tenant.tenant_id, events.CONFIG_DEPLOYED, transition_data)
     else:
-        await events.emit(events.CONFIG_UPDATED, {
-            "tenant_id": tenant.tenant_id,
-            "config_id": config.id,
-            "config_name": config.name,
-            "previous_state": previous_state.value,
-            "new_state": body.target_state.value,
-        })
+        await events.emit(events.CONFIG_UPDATED, transition_data)
+        background_tasks.add_task(deliver_event, tenant.tenant_id, events.CONFIG_UPDATED, transition_data)
 
     return APIResponse(
         data=TransitionResponse(

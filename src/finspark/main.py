@@ -78,23 +78,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await seed_admin_user()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
 
-    from finspark.core import events
-    from finspark.services.webhook_delivery import deliver_event
-
-    for event_type in [
-        events.CONFIG_CREATED,
-        events.CONFIG_UPDATED,
-        events.CONFIG_DEPLOYED,
-        events.CONFIG_ROLLED_BACK,
-        events.SIMULATION_COMPLETED,
-        events.DOCUMENT_PARSED,
-    ]:
-        events.on(
-            event_type,
-            lambda data, et=event_type: asyncio.create_task(
-                deliver_event(data.get("tenant_id", "default"), et, data)
-            ),
-        )
+    # Webhook delivery is now handled via FastAPI BackgroundTasks in each
+    # route handler, ensuring delivery runs AFTER the DB transaction commits.
 
     yield
 

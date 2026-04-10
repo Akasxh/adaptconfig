@@ -3,7 +3,7 @@
 import asyncio
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from finspark.schemas.documents import (
     ParsedDocumentResult,
 )
 from finspark.services.parsing.document_parser import DocumentParser
+from finspark.services.webhook_delivery import deliver_event
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -34,6 +35,7 @@ ALLOWED_EXTENSIONS = {".docx", ".pdf", ".yaml", ".yml", ".json"}
 @router.post("/upload", response_model=APIResponse[DocumentUploadResponse])
 async def upload_document(
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     doc_type: str = "brd",
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
@@ -131,13 +133,18 @@ async def upload_document(
 
     await db.flush()
 
+    webhook_data = {
+        "tenant_id": tenant.tenant_id,
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "doc_type": doc_type,
+    }
+    # Always fire document.uploaded; fire document.parsed only on success
+    await events.emit(events.DOCUMENT_UPLOADED, webhook_data)
+    background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_UPLOADED, webhook_data)
     if doc.status == "parsed":
-        await events.emit(events.DOCUMENT_PARSED, {
-            "tenant_id": tenant.tenant_id,
-            "document_id": doc.id,
-            "filename": doc.filename,
-            "doc_type": doc_type,
-        })
+        await events.emit(events.DOCUMENT_PARSED, webhook_data)
+        background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_PARSED, webhook_data)
 
     await audit.log(
         tenant_id=tenant.tenant_id,
