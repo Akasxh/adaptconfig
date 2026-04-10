@@ -86,7 +86,18 @@ async def _send_webhook(
             signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
             headers["X-Webhook-Signature"] = f"sha256={signature}"
         except Exception:
-            logger.warning("Failed to decrypt webhook secret for %s", webhook.id)
+            logger.error("Failed to sign webhook %s — aborting delivery", webhook.id, exc_info=True)
+            delivery = WebhookDelivery(
+                id=str(uuid.uuid4()),
+                webhook_id=webhook.id,
+                event_type=event_type,
+                payload=body,
+                status="failed",
+                attempts=0,
+            )
+            db.add(delivery)
+            await db.flush()
+            return
 
     delivery = WebhookDelivery(
         id=str(uuid.uuid4()),
@@ -109,6 +120,10 @@ async def _send_webhook(
                 if 200 <= resp.status_code < 300:
                     delivery.status = "delivered"
                     return
+                # Don't retry client errors — they won't succeed on retry
+                if 400 <= resp.status_code < 500:
+                    logger.warning("Webhook %s returned %d, not retrying", webhook.id, resp.status_code)
+                    break
             except httpx.RequestError as e:
                 logger.warning(
                     "Webhook delivery attempt %d/%d failed for %s: %s",
