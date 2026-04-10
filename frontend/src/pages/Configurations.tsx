@@ -1193,6 +1193,17 @@ export default function Configurations() {
     onError: () => { toast("Transition failed.", "error"); },
   });
 
+  const rollbackMutation = useMutation({
+    mutationFn: ({ id, version }: { id: string; version: number }) =>
+      configurationsApi.rollback(id, version),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["configurations"] });
+      queryClient.invalidateQueries({ queryKey: ["config-history"] });
+      toast(`Rolled back to version ${vars.version}.`, "success");
+    },
+    onError: () => { toast("Rollback failed.", "error"); },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => configurationsApi.delete(id),
     onSuccess: () => {
@@ -1354,6 +1365,22 @@ export default function Configurations() {
                         </button>
                       );
                     })}
+                    {cfg.version > 1 && (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ fontSize: 11, padding: "5px 10px" }}
+                        disabled={rollbackMutation.isPending}
+                        onClick={() => {
+                          if (window.confirm(`Roll back "${cfg.name}" to version ${cfg.version - 1}?`)) {
+                            rollbackMutation.mutate({ id: cfg.id, version: cfg.version - 1 });
+                          }
+                        }}
+                      >
+                        <RotateCcw style={{ width: 12, height: 12 }} />
+                        Rollback
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn-secondary"
