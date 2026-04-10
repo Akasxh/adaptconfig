@@ -458,6 +458,13 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
   const { toast } = useToast();
 
+  const { data: historyData } = useQuery({
+    queryKey: ["config-history", cfg.id],
+    queryFn: () => configurationsApi.history(cfg.id),
+  });
+  const historyEntries: ConfigHistoryEntry[] = historyData?.data ?? [];
+  const hasRollbackTargets = historyEntries.some((e) => e.version !== cfg.version);
+
   const handleExport = async (format: "json" | "yaml") => {
     try {
       const blob = await configurationsApi.export(cfg.id, format);
@@ -507,6 +514,28 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
           </button>
         </div>
       </div>
+
+      {/* Version history banner */}
+      {hasRollbackTargets && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "8px 12px", borderRadius: 6,
+          background: "rgba(56,229,205,0.06)", border: "1px solid rgba(56,229,205,0.15)",
+        }}>
+          <RotateCcw style={{ width: 14, height: 14, color: "var(--color-teal)" }} />
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", flex: 1 }}>
+            {historyEntries.length} version(s) in history — rollback available
+          </span>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ fontSize: 11, padding: "3px 8px" }}
+            onClick={() => setActiveTab("history")}
+          >
+            View History
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div>
