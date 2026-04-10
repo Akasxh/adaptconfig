@@ -41,7 +41,7 @@ def _webhook_to_response(wh: Webhook) -> WebhookResponse:
 async def register_webhook(
     body: WebhookCreate,
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = require_role("admin"),
+    tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
 ) -> APIResponse[WebhookResponse]:
     """Register a new webhook endpoint."""
@@ -102,7 +102,7 @@ async def list_webhooks(
 async def delete_webhook(
     webhook_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = require_role("admin"),
+    tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
 ) -> APIResponse[None]:
     """Delete a webhook."""

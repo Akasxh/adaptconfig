@@ -182,7 +182,7 @@ async def get_document(
 async def delete_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = require_role("admin"),
+    tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
 ) -> APIResponse[dict]:
     """Delete a document and its uploaded file."""
