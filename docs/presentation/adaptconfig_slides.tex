@@ -163,6 +163,145 @@ AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy ma
 \end{center}
 \end{frame}
 
+% ── 4b. ARCHITECTURE DEEP-DIVE ──────────────────────────────────────────────
+\begin{frame}{Architecture Deep-Dive}
+\begin{center}
+{\scriptsize
+\begin{tikzpicture}[
+  box/.style={rectangle, draw=teal, fill=surface, minimum width=2.6cm, minimum height=0.6cm, text=tp, font=\scriptsize\bfseries, rounded corners=2pt},
+  arrow/.style={->, thick, teal!60},
+]
+  \node[box, minimum width=9.5cm] (fe) at (0,3.2) {React 18 + TypeScript + TanStack Query};
+  \node[box, minimum width=9.5cm] (be) at (0,2.0) {FastAPI --- 34 Endpoints, JWT Auth, RBAC, Rate Limiter};
+  \node[box] (parser) at (-3.8,0.7) {Document Parser};
+  \node[box] (config) at (-0.6,0.7) {Config Engine};
+  \node[box] (sim) at (2.5,0.7) {Simulator};
+  \node[box] (evt) at (5.3,0.7) {Event System};
+  \node[box] (db) at (-2.2,-0.5) {SQLite / PostgreSQL};
+  \node[box] (gemini) at (1.5,-0.5) {Gemini Flash LLM};
+  \node[box] (wh) at (5.3,-0.5) {Webhook Delivery};
+  \draw[arrow] (fe) -- (be);
+  \draw[arrow] (be) -- (parser);
+  \draw[arrow] (be) -- (config);
+  \draw[arrow] (be) -- (sim);
+  \draw[arrow] (be) -- (evt);
+  \draw[arrow] (parser) -- (db);
+  \draw[arrow] (config) -- (db);
+  \draw[arrow] (config) -- (gemini);
+  \draw[arrow] (parser) -- (gemini);
+  \draw[arrow] (evt) -- (wh);
+\end{tikzpicture}
+}
+\end{center}
+\end{frame}
+
+% ── 4c. CONFIG PIPELINE ─────────────────────────────────────────────────────
+\begin{frame}{Config Generation Pipeline}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Hybrid AI + Rule Engine:}
+\begin{enumerate}
+\item \textcolor{teal}{Gemini Flash} generates config from document + adapter schema
+\item \textbf{Rule engine} augments with:
+  \begin{itemize}
+  \item 100+ Indian fintech synonyms
+  \item Fuzzy string matching (rapidfuzz)
+  \item Jaccard token overlap
+  \end{itemize}
+\item Rule-based confidence \textbf{overrides} LLM
+\item Unmapped fields \textbf{backfilled}
+\end{enumerate}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Graceful degradation:}\\[0.3em]
+{\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Path} & \textbf{When} \\
+\midrule
+LLM + Rules & API key present \\
+Rule fallback & LLM fails \\
+Pure rules & AI disabled \\
+\bottomrule
+\end{tabular}
+}
+
+\vspace{0.5em}
+\textbf{Field matching tiers:}\\[0.2em]
+{\small
+1. Exact synonym $\to$ \textcolor{ok}{1.0}\\
+2. Fuzzy match $\to$ \textcolor{warn}{0.6--0.99}\\
+3. Token Jaccard $\to$ \textcolor{warn}{0.6+}\\
+}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 4d. ROLLBACK ────────────────────────────────────────────────────────────
+\begin{frame}{Rollback \& Version Control}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Configuration Lifecycle:}
+\begin{center}
+{\small Draft $\to$ Configured $\to$ Validating $\to$ Testing $\to$ Active}
+\end{center}
+
+\vspace{0.3em}
+\textbf{Version history:}
+\begin{itemize}
+\item Every change creates a snapshot
+\item Full state serialization
+\item One-click rollback to any version
+\item Pre-rollback snapshot for safety
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Diff engine:}
+\begin{itemize}
+\item Recursive dict/list comparison
+\item Breaking change detection
+\item Side-by-side version comparison
+\item Export as JSON or YAML
+\end{itemize}
+
+\vspace{0.3em}
+\textbf{Audit trail:}
+\begin{itemize}
+\item Immutable log of every action
+\item Actor, timestamp, resource details
+\item Per-user data isolation
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 4e. DATABASE ────────────────────────────────────────────────────────────
+\begin{frame}{Database Schema (11 Tables)}
+\begin{center}
+{\small
+\begin{tabular}{llr}
+\toprule
+\textbf{Table} & \textbf{Purpose} & \textbf{Key Relations} \\
+\midrule
+\texttt{users} & Auth, RBAC (admin/editor/viewer) & tenant owner \\
+\texttt{documents} & Uploaded specs (PDF/DOCX/YAML) & tenant-scoped \\
+\texttt{adapters} & 9 pre-built adapters & global catalog \\
+\texttt{adapter\_versions} & Multi-version per adapter & FK $\to$ adapters \\
+\texttt{configurations} & Generated integration configs & FK $\to$ adapter, doc \\
+\texttt{config\_history} & Versioned snapshots for rollback & FK $\to$ configs \\
+\texttt{simulations} & Test run results & FK $\to$ configs \\
+\texttt{simulation\_steps} & Per-step test details & FK $\to$ simulations \\
+\texttt{audit\_logs} & Immutable action log & tenant-scoped \\
+\texttt{webhooks} & Registered callback URLs & tenant-scoped \\
+\texttt{webhook\_deliveries} & Delivery attempts \& status & FK $\to$ webhooks \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+\vspace{0.3em}
+{\small\centering UUID primary keys $\cdot$ Row-level tenant isolation $\cdot$ Alembic migrations $\cdot$ CASCADE deletes\par}
+\end{frame}
+
 % ── 5. AUTH ──────────────────────────────────────────────────────────────────
 \begin{frame}{Authentication \& User Isolation}
 \begin{columns}[T]
