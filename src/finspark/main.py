@@ -19,6 +19,7 @@ from finspark.api.routes import (
     configurations,
     documents,
     health,
+    observability,
     search,
     simulations,
     webhooks,
@@ -155,6 +156,7 @@ app.include_router(simulations.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
+app.include_router(observability.router, prefix="/api/v1")
 app.include_router(analytics.router)
 
 

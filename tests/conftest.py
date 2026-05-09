@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 # Import all models so Base.metadata has complete table definitions
 import finspark.models.adapter  # noqa: F401
+import finspark.models.api_call_log  # noqa: F401
 import finspark.models.audit  # noqa: F401
 import finspark.models.configuration  # noqa: F401
 import finspark.models.document  # noqa: F401

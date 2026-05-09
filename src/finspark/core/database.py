@@ -34,6 +34,7 @@ async def init_db() -> None:
 
     # Import all models so SQLAlchemy registers them on Base.metadata
     from finspark.models import adapter  # noqa: F401
+    from finspark.models import api_call_log  # noqa: F401
     from finspark.models import audit  # noqa: F401
     from finspark.models import configuration  # noqa: F401
     from finspark.models import document  # noqa: F401
