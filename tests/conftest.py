@@ -21,6 +21,7 @@ import finspark.models.adapter  # noqa: F401
 import finspark.models.api_call_log  # noqa: F401
 import finspark.models.audit  # noqa: F401
 import finspark.models.configuration  # noqa: F401
+import finspark.models.external_api_audit  # noqa: F401
 import finspark.models.document  # noqa: F401
 import finspark.models.simulation  # noqa: F401
 import finspark.models.tenant  # noqa: F401

@@ -37,6 +37,7 @@ async def init_db() -> None:
     from finspark.models import api_call_log  # noqa: F401
     from finspark.models import audit  # noqa: F401
     from finspark.models import configuration  # noqa: F401
+    from finspark.models import external_api_audit  # noqa: F401
     from finspark.models import document  # noqa: F401
     from finspark.models import simulation  # noqa: F401
     from finspark.models import tenant  # noqa: F401
