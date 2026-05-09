@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Literal
 
 VALID_AUTH_TYPES = {"api_key", "oauth2", "bearer", "basic", "jwt", "hmac"}
@@ -12,6 +13,36 @@ VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 MAX_TIMEOUT_MS = 120_000
 MIN_TIMEOUT_MS = 100
 MAX_RETRIES = 10
+
+FAST_TRACK_THRESHOLD = 0.85
+NEEDS_REVIEW_THRESHOLD = 0.5
+FIELD_REVIEW_THRESHOLD = 0.7
+
+
+class ValidationStrategy(str, Enum):
+    FAST_TRACK = "fast_track"
+    STANDARD = "standard"
+    DEEP_REVIEW = "deep_review"
+
+
+@dataclass
+class FieldReviewFlag:
+    field_mapping: str
+    confidence: float
+    action: str
+    reason: str | None = None
+
+
+@dataclass
+class TieredValidationResult:
+    passed: bool
+    strategy_used: str
+    errors: list[str]
+    warnings: list[str]
+    field_flags: list[FieldReviewFlag]
+    review_required: bool
+    auto_approved_count: int
+    needs_review_count: int
 
 
 @dataclass(frozen=True)
@@ -277,3 +308,118 @@ class ConfigValidator:
             message=f"Timeout {timeout}ms is reasonable",
             severity="info",
         )
+
+    def validate_with_confidence(self, config: dict[str, Any]) -> TieredValidationResult:
+        """Run confidence-aware validation with tiered strategy selection."""
+        mappings = config.get("field_mappings", [])
+        avg_confidence = _compute_avg_confidence(mappings)
+        strategy = _select_strategy(avg_confidence)
+        field_flags = _build_field_flags(mappings, strategy)
+
+        errors, warnings = self._run_checks_for_strategy(config, strategy)
+
+        review_required = strategy == ValidationStrategy.DEEP_REVIEW or any(
+            f.action == "needs_review" for f in field_flags
+        )
+        auto_approved = sum(1 for f in field_flags if f.action == "auto_approved")
+        needs_review = sum(1 for f in field_flags if f.action != "auto_approved")
+
+        return TieredValidationResult(
+            passed=len(errors) == 0,
+            strategy_used=strategy.value,
+            errors=errors,
+            warnings=warnings,
+            field_flags=field_flags,
+            review_required=review_required,
+            auto_approved_count=auto_approved,
+            needs_review_count=needs_review,
+        )
+
+    def _run_checks_for_strategy(
+        self, config: dict[str, Any], strategy: ValidationStrategy
+    ) -> tuple[list[str], list[str]]:
+        """Run validation checks appropriate for the given strategy."""
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        structural_checks = [
+            self.required_fields_mapped(config),
+            self.auth_configured(config),
+            self.retry_policy_valid(config),
+            self.timeout_reasonable(config),
+        ]
+        for result in structural_checks:
+            if not result.passed and result.severity == "error":
+                errors.append(result.message)
+            elif not result.passed and result.severity == "warning":
+                warnings.append(result.message)
+
+        if strategy in (ValidationStrategy.STANDARD, ValidationStrategy.DEEP_REVIEW):
+            extra_checks = [
+                self.endpoints_reachable(config),
+                self.hooks_valid(config),
+            ]
+            for result in extra_checks:
+                if not result.passed and result.severity == "error":
+                    errors.append(result.message)
+                elif not result.passed and result.severity == "warning":
+                    warnings.append(result.message)
+
+        return errors, warnings
+
+
+def _compute_avg_confidence(mappings: list[dict[str, Any]]) -> float:
+    if not mappings:
+        return 0.0
+    confidences = [float(m.get("confidence", 0.0)) for m in mappings]
+    return sum(confidences) / len(confidences)
+
+
+def _select_strategy(avg_confidence: float) -> ValidationStrategy:
+    if avg_confidence > FAST_TRACK_THRESHOLD:
+        return ValidationStrategy.FAST_TRACK
+    if avg_confidence >= NEEDS_REVIEW_THRESHOLD:
+        return ValidationStrategy.STANDARD
+    return ValidationStrategy.DEEP_REVIEW
+
+
+def _build_field_flags(
+    mappings: list[dict[str, Any]], strategy: ValidationStrategy
+) -> list[FieldReviewFlag]:
+    flags: list[FieldReviewFlag] = []
+    for m in mappings:
+        source = m.get("source_field", "?")
+        target = m.get("target_field", "?")
+        confidence = float(m.get("confidence", 0.0))
+        label = f"{source} → {target}" if target else source
+        flags.append(_classify_field(label, confidence, strategy))
+    return flags
+
+
+def _classify_field(
+    label: str, confidence: float, strategy: ValidationStrategy
+) -> FieldReviewFlag:
+    if strategy == ValidationStrategy.DEEP_REVIEW:
+        if confidence >= FAST_TRACK_THRESHOLD:
+            return FieldReviewFlag(label, confidence, "auto_approved")
+        if confidence >= NEEDS_REVIEW_THRESHOLD:
+            return FieldReviewFlag(
+                label, confidence, "needs_review",
+                reason=f"Confidence {confidence:.2f} is below auto-approve threshold in deep review",
+            )
+        return FieldReviewFlag(
+            label, confidence, "low_confidence",
+            reason=f"Confidence {confidence:.2f} is below acceptable threshold",
+        )
+
+    if confidence >= FAST_TRACK_THRESHOLD:
+        return FieldReviewFlag(label, confidence, "auto_approved")
+    if confidence >= NEEDS_REVIEW_THRESHOLD:
+        return FieldReviewFlag(
+            label, confidence, "needs_review",
+            reason=f"Confidence {confidence:.2f} is below {FAST_TRACK_THRESHOLD} threshold",
+        )
+    return FieldReviewFlag(
+        label, confidence, "low_confidence",
+        reason=f"Confidence {confidence:.2f} is below acceptable threshold",
+    )

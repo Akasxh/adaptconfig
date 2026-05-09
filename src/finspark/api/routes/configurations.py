@@ -42,9 +42,11 @@ from finspark.schemas.configurations import (
     ConfigurationResponse,
     ConfigValidationResult,
     FieldMapping,
+    FieldReviewFlagSchema,
     GenerateConfigRequest,
     RollbackRequest,
     RollbackResponse,
+    TieredValidationResponse,
     TransitionRequest,
     TransitionResponse,
     VersionComparisonResponse,
@@ -52,6 +54,7 @@ from finspark.schemas.configurations import (
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
+from finspark.services.config_engine.validator import ConfigValidator
 from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
 from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
@@ -779,6 +782,53 @@ async def validate_configuration(
     full_config = json.loads(config.full_config) if config.full_config else {}
 
     return APIResponse(data=_validate_config(full_config))
+
+
+@router.post(
+    "/{config_id}/validate-confidence",
+    response_model=APIResponse[TieredValidationResponse],
+)
+async def validate_with_confidence(
+    config_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+) -> APIResponse[TieredValidationResponse]:
+    """Run confidence-aware validation on a configuration."""
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    full_config = json.loads(config.full_config) if config.full_config else {}
+    validator = ConfigValidator()
+    tiered = validator.validate_with_confidence(full_config)
+
+    return APIResponse(
+        data=TieredValidationResponse(
+            passed=tiered.passed,
+            strategy_used=tiered.strategy_used,
+            errors=tiered.errors,
+            warnings=tiered.warnings,
+            field_flags=[
+                FieldReviewFlagSchema(
+                    field_mapping=f.field_mapping,
+                    confidence=f.confidence,
+                    action=f.action,
+                    reason=f.reason,
+                )
+                for f in tiered.field_flags
+            ],
+            review_required=tiered.review_required,
+            auto_approved_count=tiered.auto_approved_count,
+            needs_review_count=tiered.needs_review_count,
+        ),
+        message=f"Confidence validation completed using {tiered.strategy_used} strategy",
+    )
 
 
 @router.post("/{config_id}/transition", response_model=APIResponse[TransitionResponse])

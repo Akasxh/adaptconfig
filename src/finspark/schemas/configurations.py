@@ -208,3 +208,21 @@ class VersionComparisonResponse(BaseModel):
     total_changes: int
     breaking_changes: int
     diffs: list[ConfigDiffItem] = []
+
+
+class FieldReviewFlagSchema(BaseModel):
+    field_mapping: str
+    confidence: float
+    action: str
+    reason: str | None = None
+
+
+class TieredValidationResponse(BaseModel):
+    passed: bool
+    strategy_used: str
+    errors: list[str]
+    warnings: list[str]
+    field_flags: list[FieldReviewFlagSchema]
+    review_required: bool
+    auto_approved_count: int
+    needs_review_count: int
