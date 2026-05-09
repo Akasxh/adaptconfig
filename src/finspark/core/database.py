@@ -44,6 +44,7 @@ async def init_db() -> None:
     from finspark.models import tenant  # noqa: F401
     from finspark.models import user  # noqa: F401
     from finspark.models import webhook  # noqa: F401
+    from finspark.models import workflow  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

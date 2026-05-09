@@ -27,6 +27,7 @@ import finspark.models.document  # noqa: F401
 import finspark.models.simulation  # noqa: F401
 import finspark.models.tenant  # noqa: F401
 import finspark.models.webhook  # noqa: F401
+import finspark.models.workflow  # noqa: F401
 from finspark.core.database import get_db
 from finspark.main import app
 from finspark.models.base import Base
