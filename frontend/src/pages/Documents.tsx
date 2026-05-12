@@ -1,11 +1,12 @@
 import { useToast } from "@/components/Toast";
-import { documentsApi } from "@/lib/api";
-import type { Document } from "@/types";
+import { adaptersApi, configurationsApi, documentsApi } from "@/lib/api";
+import type { AdapterMatch, Document } from "@/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
   FileCode,
+  FilePlus,
   FileSpreadsheet,
   FileText,
   Layers,
@@ -13,13 +14,16 @@ import {
   Loader2,
   Search,
   Shield,
+  Sparkles,
   Trash2,
   Upload,
+  Wand2,
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import type { FileRejection } from "react-dropzone";
+import { useNavigate } from "react-router-dom";
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
 
@@ -78,7 +82,7 @@ type ParsedResult = {
 };
 
 type DocumentDetail = Document & { parsed_result?: ParsedResult };
-type DetailTab = "summary" | "endpoints" | "fields" | "auth" | "quality" | "raw";
+type DetailTab = "summary" | "endpoints" | "fields" | "auth" | "quality" | "suggest" | "raw";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -198,6 +202,7 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
     { id: "fields", label: `Fields${parsed?.fields?.length ? ` (${parsed.fields.length})` : ""}`, Icon: Layers },
     { id: "auth", label: "Auth", Icon: Shield },
     ...(lintReport ? [{ id: "quality" as DetailTab, label: `API Quality${hasLint ? ` (${lintReport.findings.length})` : ""}`, Icon: CheckCircle2 }] : []),
+    { id: "suggest", label: "Suggest adapter", Icon: Sparkles },
     { id: "raw", label: "Raw JSON", Icon: FileCode },
   ];
 
@@ -353,6 +358,8 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
             ) : <EmptyCenter>No auth requirements extracted.</EmptyCenter>
           ) : tab === "quality" ? (
             <ApiQualityTab lintReport={lintReport ?? null} />
+          ) : tab === "suggest" ? (
+            <SuggestAdapterTab document={doc} status={doc.status} />
           ) : (
             <pre style={{ background: "var(--color-bg-base)", border: "1px solid var(--color-border)", borderRadius: "0.5rem", padding: "1rem", fontSize: "0.75rem", ...S.textSecondary, overflowX: "auto", lineHeight: 1.6 }}>
               {JSON.stringify(detail, null, 2)}
@@ -490,6 +497,303 @@ function ApiQualityTab({ lintReport }: { lintReport: LintReport | null }) {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Suggest adapter tab ───────────────────────────────────────────────────────
+
+function ScoreBadge({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const color =
+    score >= 0.75 ? "var(--color-teal)" : score >= 0.5 ? "#fbbf24" : "#f87171";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.25rem",
+        fontWeight: 700,
+        fontSize: "0.6875rem",
+        letterSpacing: "0.04em",
+        color,
+        background: "var(--color-bg-base)",
+        border: `1px solid ${color}`,
+        borderRadius: "0.375rem",
+        padding: "0.125rem 0.5rem",
+      }}
+    >
+      {pct}% match
+    </span>
+  );
+}
+
+function CategoryToBucket(category: string): string {
+  // Map common adapter categories to the AdapterCategory enum the backend expects
+  const lc = category.toLowerCase();
+  if (["bureau", "kyc", "gst", "payment", "fraud", "notification", "open_banking"].includes(lc)) {
+    return lc;
+  }
+  return "custom";
+}
+
+function SuggestAdapterTab({ document: doc, status }: { document: Document; status: string }) {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [pendingMatchId, setPendingMatchId] = useState<string | null>(null);
+  const [customCategory, setCustomCategory] = useState<string>("custom");
+
+  const suggestQuery = useQuery({
+    queryKey: ["adapter-suggest", doc.id],
+    queryFn: () => adaptersApi.suggest(doc.id),
+    enabled: false, // wait for explicit button click
+    retry: false,
+  });
+
+  const generateMutation = useMutation({
+    mutationFn: (match: AdapterMatch) =>
+      configurationsApi.generate({
+        document_id: doc.id,
+        adapter_version_id: match.version_id,
+        name: `${match.adapter_name} Integration`,
+        auto_map: true,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["configurations"] });
+      toast("Configuration generated from adapter.", "success");
+      setPendingMatchId(null);
+      navigate("/configurations");
+    },
+    onError: () => {
+      toast("Failed to generate configuration.", "error");
+      setPendingMatchId(null);
+    },
+  });
+
+  const createCustomMutation = useMutation({
+    mutationFn: () =>
+      adaptersApi.createFromDocument(
+        doc.id,
+        doc.filename.replace(/\.[^.]+$/, ""),
+        CategoryToBucket(customCategory),
+      ),
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+      toast(`Custom adapter '${resp.data?.name ?? doc.filename}' created.`, "success");
+      navigate("/adapters");
+    },
+    onError: () => {
+      toast("Failed to create custom adapter.", "error");
+    },
+  });
+
+  if (status !== "parsed") {
+    return (
+      <EmptyCenter>
+        Suggestions become available once the document has finished parsing.
+      </EmptyCenter>
+    );
+  }
+
+  const response = suggestQuery.data?.data ?? null;
+  const matches = response?.matches ?? [];
+  const suggestCustom = response?.suggest_custom ?? false;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "0.75rem",
+        }}
+      >
+        <div>
+          <p style={{ fontSize: "0.875rem", fontWeight: 600, ...S.textPrimary }}>
+            LLM-ranked adapter matches
+          </p>
+          <p style={{ fontSize: "0.75rem", ...S.textMuted, marginTop: 2 }}>
+            Top 3 best-fit adapters based on the parsed endpoints and fields.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => suggestQuery.refetch()}
+          disabled={suggestQuery.isFetching}
+          style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
+        >
+          {suggestQuery.isFetching ? (
+            <>
+              <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+              Ranking…
+            </>
+          ) : (
+            <>
+              <Sparkles style={{ width: 14, height: 14 }} />
+              {response ? "Re-rank" : "Suggest adapter"}
+            </>
+          )}
+        </button>
+      </div>
+
+      {suggestQuery.error && (
+        <AlertBanner color="error" text="Suggestion failed. Please try again." />
+      )}
+
+      {!response && !suggestQuery.isFetching && !suggestQuery.error && (
+        <EmptyCenter>
+          Click <strong>Suggest adapter</strong> to ask the LLM which catalogue adapter best
+          matches this document.
+        </EmptyCenter>
+      )}
+
+      {response && matches.length === 0 && (
+        <AlertBanner
+          color="warning"
+          text="No adapters in the catalogue scored above zero. Create a custom adapter below."
+        />
+      )}
+
+      {matches.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {matches.map((m, idx) => {
+            const isPending = pendingMatchId === m.adapter_id && generateMutation.isPending;
+            return (
+              <div
+                key={`${m.adapter_id}-${m.version_id}`}
+                style={{
+                  ...S.raised,
+                  padding: "0.875rem 1rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.5rem",
+                  borderLeft: idx === 0
+                    ? "3px solid var(--color-teal)"
+                    : "3px solid var(--color-border)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <p style={{ ...S.textPrimary, fontWeight: 600, fontSize: "0.875rem", flex: 1 }}>
+                    {m.adapter_name}
+                    {m.version && (
+                      <span style={{ ...S.textMuted, fontWeight: 400, marginLeft: "0.5rem" }}>
+                        ({m.version})
+                      </span>
+                    )}
+                  </p>
+                  <ScoreBadge score={m.score} />
+                </div>
+                {m.reason && (
+                  <p style={{ ...S.textSecondary, fontSize: "0.75rem", lineHeight: 1.5 }}>
+                    {m.reason}
+                  </p>
+                )}
+                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+                    disabled={isPending || generateMutation.isPending}
+                    onClick={() => {
+                      setPendingMatchId(m.adapter_id);
+                      generateMutation.mutate(m);
+                    }}
+                  >
+                    {isPending ? (
+                      <>
+                        <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+                        Generating…
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 style={{ width: 13, height: 13 }} />
+                        Generate config from this adapter
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {suggestCustom && (
+        <div
+          style={{
+            ...S.raised,
+            padding: "0.875rem 1rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+            border: "1px dashed var(--color-border-strong)",
+          }}
+        >
+          <p style={{ ...S.textPrimary, fontWeight: 600, fontSize: "0.8125rem" }}>
+            No strong match — create a custom adapter
+          </p>
+          <p style={{ ...S.textSecondary, fontSize: "0.75rem", lineHeight: 1.5 }}>
+            Best score is below the 55% confidence threshold. You can scaffold a new
+            adapter directly from this document.
+          </p>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+            <label
+              style={{
+                fontSize: "0.75rem",
+                ...S.textMuted,
+                display: "inline-flex",
+                gap: "0.375rem",
+                alignItems: "center",
+              }}
+            >
+              Category:
+              <select
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                style={{
+                  background: "var(--color-bg-base)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: "0.375rem",
+                  padding: "0.25rem 0.5rem",
+                  fontSize: "0.75rem",
+                  ...S.textPrimary,
+                }}
+              >
+                <option value="custom">custom</option>
+                <option value="kyc">kyc</option>
+                <option value="bureau">bureau</option>
+                <option value="gst">gst</option>
+                <option value="payment">payment</option>
+                <option value="fraud">fraud</option>
+                <option value="notification">notification</option>
+                <option value="open_banking">open_banking</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+              disabled={createCustomMutation.isPending}
+              onClick={() => createCustomMutation.mutate()}
+            >
+              {createCustomMutation.isPending ? (
+                <>
+                  <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+                  Creating…
+                </>
+              ) : (
+                <>
+                  <FilePlus style={{ width: 13, height: 13 }} />
+                  Create custom adapter
+                </>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -14,13 +14,18 @@ from finspark.models.document import Document
 from finspark.schemas.adapters import (
     AdapterEndpoint,
     AdapterListResponse,
+    AdapterMatch,
     AdapterResponse,
+    AdapterSuggestRequest,
+    AdapterSuggestResponse,
     AdapterVersionResponse,
     DeprecationInfoResponse,
     MigrationStep,
 )
 from finspark.schemas.common import APIResponse, TenantContext
 from finspark.schemas.documents import ParsedDocumentResult
+from finspark.services.llm.client import get_llm_client
+from finspark.services.registry.adapter_matcher import suggest_adapters
 from finspark.services.registry.adapter_registry import AdapterRegistry
 from finspark.services.registry.deprecation import DeprecationTracker
 
@@ -291,3 +296,50 @@ async def create_adapter_from_document(
         ),
         message=f"Adapter '{name}' created with {len(endpoints)} endpoints",
     )
+
+
+@router.post("/suggest", response_model=APIResponse[AdapterSuggestResponse])
+async def suggest_adapter(
+    payload: AdapterSuggestRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+    registry: AdapterRegistry = Depends(get_adapter_registry),
+) -> APIResponse[AdapterSuggestResponse]:
+    """Suggest the best-fit adapters for a parsed document.
+
+    Sends the parsed document plus a compact catalogue summary to the LLM and
+    asks it to rank the top-3 adapters by 0-1 confidence. When the best match
+    scores below the threshold, the response asks the UI to offer the
+    "Create custom adapter" path instead.
+    """
+    stmt = select(Document).where(
+        Document.id == payload.document_id,
+        Document.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not doc.parsed_result:
+        raise HTTPException(status_code=422, detail="Document has not been parsed yet")
+
+    try:
+        parsed = json.loads(doc.parsed_result)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Parsed result is not valid JSON: {exc}"
+        ) from exc
+
+    adapters = await registry.list_adapters()
+    llm_client = get_llm_client()
+
+    matches, suggest_custom = await suggest_adapters(
+        parsed, adapters, llm_client=llm_client
+    )
+
+    response = AdapterSuggestResponse(
+        matches=[AdapterMatch(**m) for m in matches],
+        suggest_custom=suggest_custom,
+    )
+    return APIResponse(data=response)

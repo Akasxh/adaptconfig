@@ -60,6 +60,21 @@ export interface AdapterListResponse {
   categories: string[];
 }
 
+// Matches AdapterMatch Pydantic schema returned by POST /adapters/suggest
+export interface AdapterMatch {
+  adapter_id: string;
+  version_id: string;
+  adapter_name: string;
+  version: string;
+  score: number;
+  reason: string;
+}
+
+export interface AdapterSuggestResponse {
+  matches: AdapterMatch[];
+  suggest_custom: boolean;
+}
+
 // Matches DocumentUploadResponse Pydantic schema
 export interface Document {
   id: string;
