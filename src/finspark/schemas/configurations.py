@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from finspark.schemas.common import ConfigStatus
+from finspark.schemas.simulations import SimulationResponse
 
 
 class FieldMapping(BaseModel):
@@ -208,3 +209,18 @@ class VersionComparisonResponse(BaseModel):
     total_changes: int
     breaking_changes: int
     diffs: list[ConfigDiffItem] = []
+
+
+class ValidateAndTestResponse(BaseModel):
+    """Aggregated response from the validate-and-test composite pipeline.
+
+    Wraps two underlying simulation runs (LLM validation + smoke testing)
+    along with the high-level pipeline phase the inline UI panel renders.
+    """
+
+    configuration_id: str
+    phase: str  # validating | testing | done | error
+    validation: SimulationResponse
+    testing: SimulationResponse | None = None
+    final_status: ConfigStatus
+    error_message: str | None = None

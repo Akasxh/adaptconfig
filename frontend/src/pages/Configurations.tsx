@@ -1304,89 +1304,46 @@ export default function Configurations() {
   const [pipeline, setPipeline] = useState<PipelineUI | null>(null);
 
   // One-click pipeline: configured → validate (LLM 7-dim) → testing → smoke.
-  // Optimistically renders skeleton step rows the moment the user clicks,
-  // then snaps each row to the real verdict when the LLM call resolves.
+  // Server-side composite endpoint runs both phases in one request; this
+  // mutation optimistically renders skeleton step rows the moment the user
+  // clicks and snaps each row to the real verdict when the call resolves.
   const runPipelineMutation = useMutation({
-    mutationFn: async ({ id, name, currentStatus }: { id: string; name: string; currentStatus: string }) => {
-      // Phase 1 — Validation
+    mutationFn: async ({ id, name }: { id: string; name: string; currentStatus: string }) => {
       setPipeline({
         configId: id,
         configName: name,
         phase: "validating",
         validation: VALIDATION_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-        testing: [],
+        testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "pending" as StepStatus })),
       });
 
-      if (currentStatus === "configured") {
-        try {
-          await configurationsApi.transition(id, "validating");
-        } catch {
-          // already validating, ignore
-        }
-      }
+      const resp = await configurationsApi.validateAndTest(id);
+      const result = resp.data;
 
-      const valResp = await simulationsApi.run({ configuration_id: id, test_type: "integration" });
-      const valData = valResp.data;
-      const valSteps: PipelineStep[] = (valData?.steps || []).map((s: any) => ({
+      const valSim = result?.validation;
+      const valSteps: PipelineStep[] = (valSim?.steps ?? []).map((s) => ({
         name: s.step_name,
         status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
         confidence: s.confidence_score ?? undefined,
         analysis: s.error_message || undefined,
       }));
-      setPipeline((s) => (s ? { ...s, validation: valSteps.length ? valSteps : s.validation } : s));
 
-      if (!valData || valData.status !== "passed") {
-        setPipeline((s) =>
-          s
-            ? {
-                ...s,
-                phase: "error",
-                errorMsg: valData
-                  ? `Validation: ${valData.passed_tests}/${valData.total_tests} dimensions passed`
-                  : "Validation request failed",
-              }
-            : s,
-        );
-        return;
-      }
-
-      // Phase 2 — Smoke tests
-      setPipeline((s) =>
-        s
-          ? {
-              ...s,
-              phase: "testing",
-              testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-            }
-          : s,
-      );
-
-      try {
-        await configurationsApi.transition(id, "testing");
-      } catch {
-        // already testing, ignore
-      }
-
-      const testResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-      const testData = testResp.data;
-      const testSteps: PipelineStep[] = (testData?.steps || []).map((s: any) => ({
+      const testSim = result?.testing ?? null;
+      const testSteps: PipelineStep[] = (testSim?.steps ?? []).map((s) => ({
         name: s.step_name,
         status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
         confidence: s.confidence_score ?? undefined,
         analysis: s.error_message || undefined,
       }));
+
       setPipeline((s) =>
         s
           ? {
               ...s,
+              phase: (result?.phase ?? "error") as PipelinePhase,
+              validation: valSteps.length ? valSteps : s.validation,
               testing: testSteps.length ? testSteps : s.testing,
-              phase: testData && testData.status === "passed" ? "done" : "error",
-              errorMsg:
-                testData && testData.status === "passed"
-                  ? undefined
-                  : testData
-                    ? `Smoke: ${testData.passed_tests}/${testData.total_tests} tests passed`
-                    : "Smoke request failed",
+              errorMsg: result?.error_message ?? undefined,
             }
           : s,
       );

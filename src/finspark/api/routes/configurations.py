@@ -47,6 +47,7 @@ from finspark.schemas.configurations import (
     RollbackResponse,
     TransitionRequest,
     TransitionResponse,
+    ValidateAndTestResponse,
     VersionComparisonResponse,
 )
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
@@ -58,6 +59,10 @@ from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_c
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
+
+# Imported lazily inside the validate-and-test handler to avoid a circular
+# import at module load (simulations route does not import this module today,
+# but keeping the import local is cheap insurance).
 
 logger = logging.getLogger(__name__)
 
@@ -897,6 +902,144 @@ async def transition_configuration(
             available_transitions=lifecycle.get_available_transitions(),
         ),
         message=f"Transitioned from '{previous_state.value}' to '{body.target_state.value}'",
+    )
+
+
+def _best_effort_transition(
+    config: Configuration, target: ConfigStatus, *, actor: str, reason: str
+) -> None:
+    """Advance ``config.status`` toward ``target`` when the lifecycle permits.
+
+    Used by the composite validate-and-test pipeline to mirror the lifecycle
+    transitions the React client previously orchestrated step by step. Invalid
+    transitions are intentionally swallowed so re-running the pipeline against
+    a config already in ``validating`` or ``testing`` is idempotent — the
+    server lands on the right terminal state either way.
+    """
+    try:
+        lifecycle = IntegrationLifecycle(state=ConfigStatus(config.status))
+        lifecycle.transition(target, actor=actor, reason=reason)
+    except InvalidTransitionError:
+        return
+    config.status = target.value
+
+
+@router.post(
+    "/{config_id}/validate-and-test",
+    response_model=APIResponse[ValidateAndTestResponse],
+)
+async def validate_and_test_configuration(
+    config_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = require_role("admin", "editor"),
+    simulator: IntegrationSimulator = Depends(get_simulator),
+    audit: AuditService = Depends(get_audit_service),
+) -> APIResponse[ValidateAndTestResponse]:
+    """Run the full validate → test pipeline server-side in a single call.
+
+    Encapsulates the four-step flow the Configurations page previously glued
+    together client-side:
+
+    1. Best-effort lifecycle transition ``configured → validating``.
+    2. LLM (or rule-based fallback) configuration validation, persisted as a
+       ``Simulation`` row with ``test_type="integration"``.
+    3. Best-effort lifecycle transition ``validating → testing`` when step 2
+       passes.
+    4. Rule-based or LLM smoke simulation, persisted as a second ``Simulation``
+       row with ``test_type="smoke"``.
+
+    The response carries both underlying ``SimulationResponse`` payloads plus
+    a high-level ``phase`` (``validating | testing | done | error``) so the
+    inline UI panel attached to each config card can render the same progress
+    rows it used to compose from two separate ``/simulations/run`` calls.
+
+    Reuses :func:`finspark.api.routes.simulations.run_simulation_for_config`
+    end-to-end so persistence, audit, events, and webhook delivery match the
+    standalone ``/simulations/run`` endpoint exactly.
+    """
+    from finspark.api.routes.simulations import run_simulation_for_config  # noqa: PLC0415
+
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config or not config.full_config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    _best_effort_transition(
+        config,
+        ConfigStatus.VALIDATING,
+        actor=tenant.tenant_name,
+        reason="validate-and-test:phase=validating",
+    )
+
+    validation = await run_simulation_for_config(
+        db=db,
+        tenant=tenant,
+        simulator=simulator,
+        audit=audit,
+        background_tasks=background_tasks,
+        config=config,
+        test_type="integration",
+    )
+
+    if validation.status != "passed":
+        return APIResponse(
+            data=ValidateAndTestResponse(
+                configuration_id=config_id,
+                phase="error",
+                validation=validation,
+                testing=None,
+                final_status=ConfigStatus(config.status),
+                error_message=(
+                    f"Validation: {validation.passed_tests}/{validation.total_tests} dimensions passed"
+                ),
+            ),
+            success=False,
+            message="Validation failed",
+        )
+
+    _best_effort_transition(
+        config,
+        ConfigStatus.TESTING,
+        actor=tenant.tenant_name,
+        reason="validate-and-test:phase=testing",
+    )
+
+    testing = await run_simulation_for_config(
+        db=db,
+        tenant=tenant,
+        simulator=simulator,
+        audit=audit,
+        background_tasks=background_tasks,
+        config=config,
+        test_type="smoke",
+    )
+
+    pipeline_passed = testing.status == "passed"
+    phase = "done" if pipeline_passed else "error"
+    error_message = (
+        None
+        if pipeline_passed
+        else f"Smoke: {testing.passed_tests}/{testing.total_tests} tests passed"
+    )
+
+    return APIResponse(
+        data=ValidateAndTestResponse(
+            configuration_id=config_id,
+            phase=phase,
+            validation=validation,
+            testing=testing,
+            final_status=ConfigStatus(config.status),
+            error_message=error_message,
+        ),
+        success=pipeline_passed,
+        message=(
+            "Pipeline complete" if pipeline_passed else "Pipeline halted at testing phase"
+        ),
     )
 
 

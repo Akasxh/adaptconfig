@@ -17,6 +17,7 @@ import type {
   PaginatedResponse,
   SearchResponse,
   Simulation,
+  ValidateAndTestResponse,
   VersionComparisonResponse,
 } from "@/types";
 import axios from "axios";
@@ -190,6 +191,12 @@ export const configurationsApi = {
   validate: (id: string) =>
     api
       .post<APIResponse<ConfigValidationResult>>(`/api/v1/configurations/${id}/validate`)
+      .then((r) => r.data),
+  validateAndTest: (id: string) =>
+    api
+      .post<APIResponse<ValidateAndTestResponse>>(
+        `/api/v1/configurations/${id}/validate-and-test`
+      )
       .then((r) => r.data),
   transition: (id: string, targetState: string, reason?: string) =>
     api
