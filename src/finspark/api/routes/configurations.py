@@ -27,9 +27,11 @@ from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
+from finspark.core.json_utils import safe_json_loads
 from finspark.models.adapter import AdapterVersion
 from finspark.models.configuration import Configuration, ConfigurationHistory
 from finspark.models.document import Document
+from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, ConfigStatus, TenantContext
 from finspark.schemas.configurations import (
     BatchConfigRequest,
@@ -44,10 +46,13 @@ from finspark.schemas.configurations import (
     ConfigValidationResult,
     FieldMapping,
     GenerateConfigRequest,
+    PipelineStepResult,
     RollbackRequest,
     RollbackResponse,
     TransitionRequest,
     TransitionResponse,
+    ValidateAndTestRequest,
+    ValidateAndTestResponse,
     VersionComparisonResponse,
 )
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
@@ -840,6 +845,208 @@ async def validate_configuration(
     full_config = json.loads(config.full_config) if config.full_config else {}
 
     return APIResponse(data=_validate_config(full_config))
+
+
+@router.post(
+    "/{config_id}/validate-and-test",
+    response_model=APIResponse[ValidateAndTestResponse],
+)
+async def validate_and_test_configuration(
+    config_id: str,
+    background_tasks: BackgroundTasks,
+    body: ValidateAndTestRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = require_role("admin", "editor"),
+    simulator: IntegrationSimulator = Depends(get_simulator),
+    audit: AuditService = Depends(get_audit_service),
+) -> APIResponse[ValidateAndTestResponse]:
+    """Run the full validate-and-test pipeline for a configuration.
+
+    Mirrors what the React UI used to orchestrate client-side:
+      1. transition  configured -> validating  (or skip if already past)
+      2. validate    (calls the same _validate_config used by /validate)
+      3. transition  validating -> testing
+      4. simulate    test_type=smoke
+
+    The endpoint short-circuits gracefully when the config is already further
+    along the lifecycle, so callers can replay the pipeline idempotently.
+    Returns a composite response containing every sub-step.
+    """
+    request_body = body or ValidateAndTestRequest()
+
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    full_config = safe_json_loads(config.full_config, {}) if config.full_config else {}
+    pipeline_steps: list[PipelineStepResult] = []
+    overall_status = "passed"
+
+    # Step 0: Advance draft -> configured if needed so the rest of the pipeline
+    # can run for freshly seeded configs.
+    if config.status == ConfigStatus.DRAFT.value:
+        step = await _advance_state(
+            config, ConfigStatus.CONFIGURED, request_body.reason, db, audit, tenant
+        )
+        pipeline_steps.append(step)
+        if step.status == "failed":
+            overall_status = "failed"
+
+    # Step 1: transition configured -> validating
+    if overall_status == "passed":
+        step = await _advance_state(
+            config, ConfigStatus.VALIDATING, request_body.reason, db, audit, tenant
+        )
+        pipeline_steps.append(step)
+        if step.status == "failed":
+            overall_status = "failed"
+
+    # Step 2: validate
+    validation: ConfigValidationResult | None = None
+    if overall_status == "passed":
+        validation = _validate_config(full_config)
+        pipeline_steps.append(
+            PipelineStepResult(
+                name="validate",
+                status="passed" if validation.is_valid else "failed",
+                details={
+                    "is_valid": validation.is_valid,
+                    "coverage_score": validation.coverage_score,
+                    "errors": validation.errors,
+                    "warnings": validation.warnings,
+                },
+            )
+        )
+        if not validation.is_valid:
+            overall_status = "failed"
+
+    # Step 3: transition validating -> testing  (only when validation passed)
+    if overall_status == "passed":
+        step = await _advance_state(
+            config, ConfigStatus.TESTING, request_body.reason, db, audit, tenant
+        )
+        pipeline_steps.append(step)
+        if step.status == "failed":
+            overall_status = "failed"
+
+    # Step 4: smoke simulation
+    simulation_id: str | None = None
+    total = passed = failed = duration_ms = 0
+    if overall_status == "passed":
+        simulation = Simulation(
+            tenant_id=tenant.tenant_id,
+            configuration_id=config.id,
+            status="running",
+            test_type=request_body.test_type,
+        )
+        db.add(simulation)
+        await db.flush()
+
+        sim_steps = await asyncio.to_thread(
+            simulator.run_simulation, full_config, test_type=request_body.test_type
+        )
+        total = len(sim_steps)
+        passed = sum(1 for s in sim_steps if s.status == "passed")
+        failed = total - passed
+        duration_ms = sum(s.duration_ms for s in sim_steps)
+
+        simulation.status = "passed" if failed == 0 else "failed"
+        simulation.total_tests = total
+        simulation.passed_tests = passed
+        simulation.failed_tests = failed
+        simulation.duration_ms = duration_ms
+        simulation.results = json.dumps([s.model_dump() for s in sim_steps])
+
+        for i, s in enumerate(sim_steps):
+            db.add(
+                SimulationStep(
+                    simulation_id=simulation.id,
+                    step_name=s.step_name,
+                    step_order=i,
+                    status=s.status,
+                    request_payload=json.dumps(s.request_payload),
+                    expected_response=json.dumps(s.expected_response),
+                    actual_response=json.dumps(s.actual_response),
+                    duration_ms=s.duration_ms,
+                    confidence_score=s.confidence_score,
+                    error_message=s.error_message,
+                )
+            )
+
+        simulation_id = simulation.id
+        pipeline_steps.append(
+            PipelineStepResult(
+                name="smoke_simulation",
+                status=simulation.status,
+                details={
+                    "simulation_id": simulation_id,
+                    "total_tests": total,
+                    "passed_tests": passed,
+                    "failed_tests": failed,
+                    "step_names": [s.step_name for s in sim_steps],
+                },
+            )
+        )
+        if simulation.status == "failed":
+            overall_status = "failed"
+
+        # If smoke failed, drop the config back to "configured" so the UI can
+        # tell the operator validation was OK but smoke failed.
+        if simulation.status == "failed":
+            try:
+                config.status = ConfigStatus.CONFIGURED.value
+            except Exception:  # noqa: BLE001 - defensive only
+                pass
+
+        sim_event_data = {
+            "tenant_id": tenant.tenant_id,
+            "simulation_id": simulation_id,
+            "configuration_id": config.id,
+            "status": simulation.status,
+            "total_tests": total,
+            "passed_tests": passed,
+            "failed_tests": failed,
+            "via": "validate-and-test",
+        }
+        await events.emit(events.SIMULATION_COMPLETED, sim_event_data)
+        background_tasks.add_task(
+            deliver_event, tenant.tenant_id, events.SIMULATION_COMPLETED, sim_event_data
+        )
+
+    await audit.log(
+        tenant_id=tenant.tenant_id,
+        actor=tenant.tenant_name,
+        action="validate_and_test",
+        resource_type="configuration",
+        resource_id=config.id,
+        details={
+            "overall_status": overall_status,
+            "total_tests": total,
+            "passed_tests": passed,
+            "final_state": config.status,
+        },
+    )
+
+    return APIResponse(
+        data=ValidateAndTestResponse(
+            configuration_id=config.id,
+            final_state=ConfigStatus(config.status),
+            overall_status=overall_status,
+            validation=validation,
+            simulation_id=simulation_id,
+            total_tests=total,
+            passed_tests=passed,
+            failed_tests=failed,
+            duration_ms=duration_ms,
+            steps=pipeline_steps,
+        ),
+        message=f"Pipeline {overall_status}: {passed}/{total} tests passed",
+    )
 
 
 @router.post("/{config_id}/transition", response_model=APIResponse[TransitionResponse])

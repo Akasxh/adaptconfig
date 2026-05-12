@@ -198,6 +198,28 @@ export interface ConfigValidationResult {
   unmapped_source_fields: string[];
 }
 
+// Matches PipelineStepResult Pydantic schema
+export interface PipelineStepResult {
+  name: string;
+  status: string; // passed, failed, skipped
+  details?: Record<string, unknown>;
+  error?: string | null;
+}
+
+// Matches ValidateAndTestResponse Pydantic schema (issue #116 composite endpoint)
+export interface ValidateAndTestResponse {
+  configuration_id: string;
+  final_state: string;
+  overall_status: string; // passed, failed
+  validation?: ConfigValidationResult | null;
+  simulation_id?: string | null;
+  total_tests: number;
+  passed_tests: number;
+  failed_tests: number;
+  duration_ms: number;
+  steps: PipelineStepResult[];
+}
+
 export interface ConfigTemplateResponse {
   name: string;
   description: string;

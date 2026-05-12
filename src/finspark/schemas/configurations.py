@@ -213,3 +213,34 @@ class VersionComparisonResponse(BaseModel):
     total_changes: int
     breaking_changes: int
     diffs: list[ConfigDiffItem] = []
+
+
+class PipelineStepResult(BaseModel):
+    """Outcome of a single pipeline stage in the validate-and-test endpoint."""
+
+    name: str  # transition_to_validating, validate, transition_to_testing, smoke_simulation
+    status: str  # passed, failed, skipped
+    details: dict[str, Any] = {}
+    error: str | None = None
+
+
+class ValidateAndTestRequest(BaseModel):
+    """Optional request body for the composite validate-and-test endpoint."""
+
+    test_type: str = "smoke"  # passed straight through to the simulator
+    reason: str | None = None  # captured in the lifecycle audit log
+
+
+class ValidateAndTestResponse(BaseModel):
+    """Composite result of transition->validate->transition->smoke pipeline."""
+
+    configuration_id: str
+    final_state: ConfigStatus
+    overall_status: str  # passed, failed
+    validation: ConfigValidationResult | None = None
+    simulation_id: str | None = None
+    total_tests: int = 0
+    passed_tests: int = 0
+    failed_tests: int = 0
+    duration_ms: int = 0
+    steps: list[PipelineStepResult] = []

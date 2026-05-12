@@ -1767,26 +1767,28 @@ export default function Configurations() {
 
   const transitionMutation = useMutation({
     mutationFn: async ({ id, targetState }: { id: string; targetState: string }) => {
-      const transResult = await configurationsApi.transition(id, targetState);
-      // Auto-run simulation when transitioning to "testing"
+      // Validate -> smoke pipeline now lives behind a single composite endpoint
+      // (POST /api/v1/configurations/{id}/validate-and-test, issue #116).
+      // We still call /transition for every other lifecycle step.
       if (targetState === "testing") {
-        try {
-          const simResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-          const sim = simResp.data;
-          if (sim) {
-            setLastSimResult({
-              configId: id,
-              status: sim.status,
-              passed: sim.passed_tests,
-              total: sim.total_tests,
-              steps: sim.steps || [],
-            });
-          }
-        } catch {
-          // Simulation failed but transition succeeded — still OK
+        const resp = await configurationsApi.validateAndTest(id, { test_type: "smoke", reason: "ui:start-testing" });
+        const pipeline = resp.data;
+        if (pipeline) {
+          setLastSimResult({
+            configId: id,
+            status: pipeline.overall_status === "passed" ? "passed" : "failed",
+            passed: pipeline.passed_tests,
+            total: pipeline.total_tests,
+            steps: (pipeline.steps || []).map((s) => ({
+              step_name: s.name,
+              status: s.status,
+              error_message: s.error ?? undefined,
+            })),
+          });
         }
+        return resp;
       }
-      return transResult;
+      return configurationsApi.transition(id, targetState);
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["configurations"] });
