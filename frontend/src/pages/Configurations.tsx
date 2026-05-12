@@ -2,6 +2,7 @@ import { useToast } from "@/components/Toast";
 import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
 import type {
   Adapter,
+  AdapterEndpoint,
   ConfigDiffItem,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -13,6 +14,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowDown,
   BarChart3,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +23,7 @@ import {
   Download,
   GitCompare,
   History,
+  Link2,
   Loader2,
   PlayCircle,
   Plus,
@@ -451,7 +454,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
   );
 }
 
-type DetailTab = "mappings" | "history" | "validation";
+type DetailTab = "mappings" | "chain" | "history" | "validation";
 
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
@@ -480,8 +483,12 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
     }
   };
 
+  const chainEndpoints = (cfg.endpoints ?? []).filter((ep) => !!ep.id);
+  const hasChain = chainEndpoints.length >= 2 && chainEndpoints.some((ep) => !!ep.depends_on);
+
   const tabs: { id: DetailTab; label: string; icon: React.ElementType }[] = [
     { id: "mappings", label: "Mappings", icon: Settings },
+    ...(hasChain ? [{ id: "chain" as DetailTab, label: "Chain", icon: Link2 }] : []),
     { id: "history", label: "History", icon: History },
     { id: "validation", label: "Validation", icon: BarChart3 },
   ];
@@ -562,6 +569,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         </div>
 
         {activeTab === "mappings" && <MappingsTable key={cfg.id} cfg={cfg} />}
+        {activeTab === "chain" && <ChainFlowPanel endpoints={cfg.endpoints ?? []} />}
         {activeTab === "history" && <HistoryPanel configId={cfg.id} currentVersion={cfg.version} />}
         {activeTab === "validation" && <ValidationPanel configId={cfg.id} />}
       </div>
@@ -571,6 +579,360 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         Adapter version: <code style={{ fontFamily: "monospace", color: "var(--color-text-secondary)" }}>{cfg.adapter_version_id}</code>
         {" · "}Created {fmtDate(cfg.created_at)}
       </p>
+    </div>
+  );
+}
+
+// ── Chain Flow Panel (issue #109 MVP slice) ──────────────────────────────────
+
+/**
+ * Topological sort of chain endpoints by `depends_on`.  Mirrors the backend's
+ * Kahn's-algorithm implementation so the UI shows the same execution order
+ * the simulator will produce.  Returns the endpoints in original order with
+ * a `hasCycle` flag if a cycle is detected -- the panel renders a warning
+ * in that case rather than re-ordering arbitrarily.
+ */
+function sortChainEndpoints(
+  endpoints: AdapterEndpoint[],
+): { sorted: AdapterEndpoint[]; hasCycle: boolean } {
+  const chained = endpoints.filter((ep) => !!ep.id);
+  const byId = new Map<string, AdapterEndpoint>();
+  for (const ep of chained) {
+    if (ep.id) byId.set(ep.id, ep);
+  }
+
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const id of byId.keys()) {
+    inDegree.set(id, 0);
+    dependents.set(id, []);
+  }
+
+  for (const ep of chained) {
+    if (!ep.id || !ep.depends_on) continue;
+    const deps = Array.isArray(ep.depends_on) ? ep.depends_on : [ep.depends_on];
+    for (const dep of deps) {
+      if (!byId.has(dep)) continue;  // unknown dep -- skip, surfaces elsewhere
+      dependents.get(dep)?.push(ep.id);
+      inDegree.set(ep.id, (inDegree.get(ep.id) ?? 0) + 1);
+    }
+  }
+
+  const queue: string[] = [];
+  for (const [id, deg] of inDegree) {
+    if (deg === 0) queue.push(id);
+  }
+
+  const ordered: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    ordered.push(current);
+    for (const next of dependents.get(current) ?? []) {
+      const nextDeg = (inDegree.get(next) ?? 0) - 1;
+      inDegree.set(next, nextDeg);
+      if (nextDeg === 0) queue.push(next);
+    }
+  }
+
+  if (ordered.length !== byId.size) {
+    return { sorted: chained, hasCycle: true };
+  }
+
+  const sorted: AdapterEndpoint[] = [];
+  for (const id of ordered) {
+    const ep = byId.get(id);
+    if (ep) sorted.push(ep);
+  }
+  return { sorted, hasCycle: false };
+}
+
+/**
+ * Renders the chain as a vertical `[A] -> [B] -> [C]` flow with the
+ * extract/inject pairs shown between cards (issue #109 MVP slice).
+ *
+ * No-chain configs get a neutral placeholder so the tab is still
+ * informative when toggled on an adapter that doesn't use chaining.
+ */
+function ChainFlowPanel({ endpoints }: { endpoints: AdapterEndpoint[] }) {
+  const { sorted, hasCycle } = sortChainEndpoints(endpoints);
+
+  if (sorted.length === 0) {
+    return (
+      <div
+        style={{
+          padding: "24px 16px",
+          textAlign: "center",
+          borderRadius: 8,
+          border: "1px dashed var(--color-border)",
+          background: "var(--color-bg-base)",
+        }}
+      >
+        <p style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.5 }}>
+          This configuration doesn't use API chaining.  Endpoints run independently.
+        </p>
+      </div>
+    );
+  }
+
+  // Build a map of extracted keys per upstream step so the arrow between
+  // two cards can label exactly which fields flow forward.
+  const extractsBySource = new Map<string, string[]>();
+  for (const ep of sorted) {
+    if (ep.id && ep.extract) {
+      extractsBySource.set(ep.id, Object.keys(ep.extract));
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      {hasCycle && (
+        <div
+          style={{
+            padding: "8px 12px",
+            marginBottom: 12,
+            borderRadius: 6,
+            background: "rgba(217,119,6,0.08)",
+            border: "1px solid rgba(217,119,6,0.2)",
+            fontSize: 12,
+            color: "var(--color-warning-text, #d97706)",
+          }}
+        >
+          Cycle detected in dependency graph.  The simulator will reject this
+          chain with HTTP 400 until the cycle is broken.
+        </div>
+      )}
+
+      {sorted.map((ep, idx) => {
+        const deps = ep.depends_on
+          ? Array.isArray(ep.depends_on)
+            ? ep.depends_on
+            : [ep.depends_on]
+          : [];
+        const injectEntries = ep.inject ? Object.entries(ep.inject) : [];
+        const extractEntries = ep.extract ? Object.entries(ep.extract) : [];
+
+        // Collect extract keys from upstream dependencies so we can label
+        // the arrow connecting the previous card to this one.
+        const upstreamExtractKeys: string[] = [];
+        for (const depId of deps) {
+          const keys = extractsBySource.get(depId);
+          if (keys) upstreamExtractKeys.push(...keys);
+        }
+
+        return (
+          <div key={ep.id ?? idx}>
+            {/* Arrow connector from previous endpoint */}
+            {idx > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  padding: "6px 0",
+                }}
+              >
+                {upstreamExtractKeys.length > 0 && (
+                  <div
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: 4,
+                      background: "rgba(56,229,205,0.08)",
+                      border: "1px solid rgba(56,229,205,0.18)",
+                      fontSize: 10,
+                      color: "var(--color-brand-light)",
+                      whiteSpace: "nowrap",
+                      marginBottom: 2,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    extracts: {upstreamExtractKeys.join(", ")}
+                  </div>
+                )}
+                <ArrowDown
+                  style={{
+                    width: 14,
+                    height: 14,
+                    color: "var(--color-brand-light)",
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Endpoint card */}
+            <div
+              style={{
+                borderRadius: 8,
+                border: "1px solid var(--color-border)",
+                background: "var(--color-bg-raised)",
+                padding: "12px 16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {/* Method + path */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: "rgba(56,229,205,0.1)",
+                    color: "var(--color-brand-light)",
+                    fontFamily: "monospace",
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  {ep.method}
+                </span>
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    fontFamily: "monospace",
+                    color: "var(--color-text-primary)",
+                  }}
+                >
+                  {ep.path}
+                </span>
+              </div>
+
+              {/* ID label */}
+              <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                id:{" "}
+                <code
+                  style={{
+                    fontFamily: "monospace",
+                    color: "var(--color-text-secondary)",
+                  }}
+                >
+                  {ep.id}
+                </code>
+              </div>
+
+              {/* depends_on */}
+              {deps.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                  depends on:{" "}
+                  {deps.map((d, di) => (
+                    <span key={d}>
+                      {di > 0 && ", "}
+                      <code
+                        style={{
+                          fontFamily: "monospace",
+                          color: "var(--color-brand-light)",
+                        }}
+                      >
+                        {d}
+                      </code>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Extract rules (what this step contributes downstream) */}
+              {extractEntries.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    background: "rgba(56,229,205,0.04)",
+                    border: "1px solid rgba(56,229,205,0.1)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 3,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "var(--color-brand-light)",
+                    }}
+                  >
+                    Extracts
+                  </span>
+                  {extractEntries.map(([key, path]) => (
+                    <div
+                      key={key}
+                      style={{ fontSize: 11, fontFamily: "monospace" }}
+                    >
+                      <span style={{ color: "var(--color-text-primary)" }}>
+                        {key}
+                      </span>
+                      <span
+                        style={{
+                          color: "var(--color-text-muted)",
+                          margin: "0 4px",
+                        }}
+                      >
+                        &larr;
+                      </span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>
+                        {path}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Inject rules (what this step pulls from upstream) */}
+              {injectEntries.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    background: "rgba(56,229,205,0.04)",
+                    border: "1px solid rgba(56,229,205,0.1)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 3,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "var(--color-brand-light)",
+                    }}
+                  >
+                    Injects
+                  </span>
+                  {injectEntries.map(([target, template]) => (
+                    <div
+                      key={target}
+                      style={{ fontSize: 11, fontFamily: "monospace" }}
+                    >
+                      <span style={{ color: "var(--color-text-secondary)" }}>
+                        {target}
+                      </span>
+                      <span
+                        style={{
+                          color: "var(--color-text-muted)",
+                          margin: "0 4px",
+                        }}
+                      >
+                        &larr;
+                      </span>
+                      <span style={{ color: "var(--color-brand-light)" }}>
+                        {template}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

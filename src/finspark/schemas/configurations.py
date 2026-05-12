@@ -69,6 +69,11 @@ class ConfigurationResponse(BaseModel):
     field_mappings: list[FieldMapping] = []
     transformation_rules: list[TransformationRule] = []
     hooks: list[HookConfig] = []
+    # Chain runtime (#109 MVP slice): the LLM-generated endpoints array
+    # surfaced to the UI so the expanded config card can render the chain
+    # visually. Plain ``dict`` to avoid coupling the response schema to
+    # the chain spec -- the executor validates shape at run time.
+    endpoints: list[dict[str, Any]] = []
     created_at: datetime
     updated_at: datetime
 
