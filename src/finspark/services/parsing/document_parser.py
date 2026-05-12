@@ -170,123 +170,57 @@ class DocumentParser:
         Falls back to the regex-based ``parse_text()`` on any error.
         """
         _SYSTEM_INSTRUCTION = (
-            "You are a senior integration architect specializing in Indian fintech APIs "
-            "(CIBIL, eKYC, GST, UPI, Account Aggregator, NPCI, Razorpay, Paytm). "
-            "You extract precise, exhaustive specifications from BRDs, SOWs, OpenAPI specs, "
-            "and technical documents. Your extractions feed an automated configuration generator: "
-            "every endpoint, field, auth requirement, and SLA you miss costs the team manual work. "
-            "Favor explicit extraction over inference, and never invent fields not in the document."
+            "You are an expert at extracting structured integration requirements from "
+            "enterprise documents (BRDs, SOWs, API specs, technical specifications) "
+            "for Indian financial services. Extract every API endpoint, field definition, "
+            "authentication requirement, and service identifier present in the document."
         )
-        _PROMPT = """Extract a complete integration specification from this document.
+        _PROMPT = """Analyze the following document and extract ALL structured information.
 
 Document filename: {filename}
-Document content:
-'''
+Document text:
+---
 {text}
-'''
+---
 
-# Output schema
-
-Return a JSON object exactly matching this shape:
+Return a JSON object with exactly these keys:
 {{
-  "doc_type": "api_spec",
-  "title": "string",
-  "summary": "1-2 sentence purpose statement",
-  "services_identified": ["external service/provider names"],
-  "endpoints": [{{
-    "id": "auth",
-    "path": "/oauth/token",
-    "method": "POST",
-    "description": "Exchange client credentials for access token",
-    "is_mandatory": true,
-    "depends_on": null,
-    "extract": {{"access_token": "$.access_token"}},
-    "inject": {{}}
-  }}],
-  "fields": [{{
-    "name": "pan_number",
-    "data_type": "string",
-    "is_required": true,
-    "source_section": "Request Schema",
-    "description": "Permanent Account Number, 10-char alphanumeric",
-    "sample_value": "ABCDE1234F"
-  }}],
-  "auth_requirements": [{{
-    "auth_type": "oauth2",
-    "details": {{"token_url": "/oauth/token", "scopes": ["payments:write"]}}
-  }}],
-  "security_requirements": ["TLS 1.2+", "PAN must be encrypted at rest"],
+  "doc_type": "brd",
+  "title": "Document title or best guess from content",
+  "summary": "One paragraph summary of the document purpose",
+  "services_identified": ["List of external service/API/provider names mentioned"],
+  "endpoints": [
+    {{"path": "/api/path", "method": "POST", "description": "What this endpoint does", "is_mandatory": true}}
+  ],
+  "fields": [
+    {{"name": "field_name", "data_type": "string", "is_required": true, "source_section": "section name where field appears", "description": "field description", "sample_value": ""}}
+  ],
+  "auth_requirements": [
+    {{"auth_type": "api_key", "details": {{"description": "How authentication works"}}}}
+  ],
+  "security_requirements": ["List of security requirements as plain strings"],
   "sla_requirements": {{"response_time": "200ms", "availability": "99.9%"}},
-  "sections": {{"Authentication": "Brief content snippet"}}
+  "sections": {{"section_name": "brief content or heading"}}
 }}
 
-# Enum values
-
-- doc_type: brd | sow | api_spec | technical_spec | other (infer from filename + content)
-- method: GET | POST | PUT | PATCH | DELETE
-- data_type: string | number | boolean | date | array | object
-- auth_type: api_key | oauth2 | bearer | basic | jwt | hmac | mutual_tls | api_key_certificate
-
-# API chaining detection (critical for multi-step flows)
-
-If the API requires multi-step calls — e.g. fetch OAuth token THEN call resource THEN poll status —
-wire them as a dependency chain:
-
-1. Give every endpoint a SHORT snake_case `id` like "auth", "create_payment", "check_status".
-2. Set `depends_on` to the id of the prerequisite endpoint (or null for entry points).
-3. Use `extract` to declare which response fields downstream endpoints need, with JSONPath:
-   - `{{"access_token": "$.access_token"}}` — top-level field
-   - `{{"txn_id": "$.data.transaction_id"}}` — nested
-4. Use `inject` to wire those values into the downstream request, with `{{{{step_id.field}}}}` templates:
-   - `{{"headers.Authorization": "Bearer {{{{auth.access_token}}}}"}}`
-   - `{{"path_params.id": "{{{{create_payment.txn_id}}}}"}}`
-
-Common chain patterns:
-- OAuth flow: token → resource → resource
-- Payment: tokenize_card → authorize → capture → settle
-- KYC: initiate_session → upload_document → verify → fetch_result
-- AA framework: create_consent → notify_user → fetch_data
-
-# Domain vocabulary to recognize
-
-Identity: PAN, Aadhaar, VID, voter_id, passport, DL.
-Credit bureaus: CIBIL/TransUnion, Equifax, Experian, CRIF Highmark.
-Banking: NEFT, RTGS, IMPS, UPI, NACH, e-Mandate, IFSC, MICR.
-Tax: GSTIN, TAN, ITR.
-KYC: CKYC, eKYC, Video KYC, Aadhaar OTP, OVD, XML eKYC.
-Risk/AML: FATF, PEP, sanctions, fraud_score.
-Open banking: AA framework, FIP, FIU, consent artefact, FI data.
-Payments: Razorpay, Paytm, PhonePe, BillDesk, Cashfree, NPCI.
-
-# Extraction rules
-
-1. Extract EVERY endpoint and field present in the document. Be exhaustive.
-2. Default `is_required=true` and `is_mandatory=true` unless the doc explicitly marks optional.
-3. Set `id` on EVERY endpoint (you choose the name) — this enables chain detection.
-4. For OpenAPI/Swagger specs: `paths.<path>.<method>` becomes an endpoint; `requestBody.content.*.schema.properties` becomes fields.
-5. Infer field types from name when not specified: `*_date` → date, `is_*` / `has_*` → boolean, `*_amount` → number.
-6. `sla_requirements` values must be strings; omit keys not mentioned.
-7. Output JSON only. No markdown fences. No commentary."""
+Rules:
+- doc_type must be one of: brd, sow, api_spec, technical_spec, other
+- Infer doc_type from the filename and content
+- Focus on Indian fintech terms: CIBIL, PAN, Aadhaar, GSTIN, UPI, NEFT, IMPS, eKYC, mTLS, etc.
+- Include ALL endpoints and fields explicitly mentioned or strongly implied
+- sla_requirements values must be strings (e.g. "200ms", "99.9%"); omit keys not found
+- Return ONLY valid JSON, no markdown fences"""
 
         truncated = text[:15000]
         doc_type = self._normalize_doc_type("brd")
 
         try:
             prompt = _PROMPT.format(filename=filename, text=truncated)
-            # Use gpt-4.1-mini for parsing — fast and accurate for structured
-            # extraction. Reasoning models (gpt-5) are too slow (60s+).
-            from finspark.core.config import settings as _settings
-
-            parse_kwargs: dict[str, Any] = {}
-            if _settings.llm_provider == "openai":
-                parse_kwargs["model"] = "gpt-4.1-mini"
-
             llm_data: dict[str, Any] = await client.generate_json(
                 prompt,
                 system_instruction=_SYSTEM_INSTRUCTION,
                 temperature=0.1,
                 max_tokens=8192,
-                **parse_kwargs,
             )
 
             inferred_type = self._normalize_doc_type(llm_data.get("doc_type", "brd"))
@@ -298,10 +232,6 @@ Payments: Razorpay, Paytm, PhonePe, BillDesk, Cashfree, NPCI.
                     description=ep.get("description", ""),
                     parameters=[],
                     is_mandatory=ep.get("is_mandatory", True),
-                    id=ep.get("id"),
-                    depends_on=ep.get("depends_on"),
-                    extract=ep.get("extract") or None,
-                    inject=ep.get("inject") or None,
                 )
                 for ep in llm_data.get("endpoints", [])
                 if ep.get("path")
@@ -332,24 +262,13 @@ Payments: Razorpay, Paytm, PhonePe, BillDesk, Cashfree, NPCI.
                 if rf.name not in llm_field_names:
                     fields.append(rf)
 
-            auth = []
-            for a in llm_data.get("auth_requirements", []):
-                # Coerce non-string detail values (e.g. lists, ints) to strings,
-                # since ExtractedAuth.details is typed as dict[str, str].
-                raw_details = a.get("details", {})
-                coerced_details: dict[str, str] = {}
-                if isinstance(raw_details, dict):
-                    for k, v in raw_details.items():
-                        if isinstance(v, (list, tuple)):
-                            coerced_details[str(k)] = ", ".join(str(x) for x in v)
-                        elif v is not None:
-                            coerced_details[str(k)] = str(v)
-                auth.append(
-                    ExtractedAuth(
-                        auth_type=a.get("auth_type", "api_key"),
-                        details=coerced_details,
-                    )
+            auth = [
+                ExtractedAuth(
+                    auth_type=a.get("auth_type", "api_key"),
+                    details=a.get("details", {}),
                 )
+                for a in llm_data.get("auth_requirements", [])
+            ]
 
             sla_raw = llm_data.get("sla_requirements", {})
             sla: dict[str, str] = (

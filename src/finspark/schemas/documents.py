@@ -15,11 +15,6 @@ class ExtractedEndpoint(BaseModel):
     description: str = ""
     parameters: list[dict[str, str]] = []
     is_mandatory: bool = True
-    # Chaining fields — populated when the LLM detects multi-step flows
-    id: str | None = None
-    depends_on: str | list[str] | None = None
-    extract: dict[str, str] | None = None
-    inject: dict[str, str] | None = None
 
 
 class ExtractedField(BaseModel):
@@ -40,26 +35,6 @@ class ExtractedAuth(BaseModel):
     details: dict[str, str] = {}
 
 
-class LintFinding(BaseModel):
-    """A single finding from Spectral linting."""
-
-    code: str
-    message: str
-    severity: str = "info"  # error | warning | info | hint
-    path: str = ""  # JSONPath in the spec
-    range: str = ""  # line:col-line:col
-
-
-class LintReport(BaseModel):
-    """Aggregated lint results from Spectral."""
-
-    findings: list[LintFinding] = []
-    error_count: int = 0
-    warning_count: int = 0
-    info_count: int = 0
-    spectral_available: bool = True
-
-
 class ParsedDocumentResult(BaseModel):
     """Structured result from document parsing."""
 
@@ -75,7 +50,6 @@ class ParsedDocumentResult(BaseModel):
     sections: dict[str, str] = {}
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
     raw_entities: list[str] = []
-    lint_report: LintReport | None = None
 
 
 class DocumentUploadResponse(BaseModel):

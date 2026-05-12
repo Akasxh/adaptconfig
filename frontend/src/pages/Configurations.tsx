@@ -1,8 +1,7 @@
 import { useToast } from "@/components/Toast";
-import { adaptersApi, configurationsApi, documentsApi, securityApi, simulationsApi } from "@/lib/api";
+import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
 import type {
   Adapter,
-  AdapterEndpoint,
   ConfigDiffItem,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -10,8 +9,6 @@ import type {
   ConfigValidationResult,
   Configuration,
   FieldMapping,
-  SecurityFinding,
-  SecurityReport,
 } from "@/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,7 +21,6 @@ import {
   Download,
   GitCompare,
   History,
-  Link,
   Loader2,
   PlayCircle,
   Plus,
@@ -32,7 +28,6 @@ import {
   RotateCcw,
   Save,
   Settings,
-  ShieldCheck,
   Sparkles,
   Trash2,
   X,
@@ -87,8 +82,8 @@ const TRANSITION_BUTTONS: Record<
   { label: string; icon: React.ElementType; targetState: string }[]
 > = {
   draft: [{ label: "Mark Configured", icon: CheckCircle2, targetState: "configured" }],
-  configured: [{ label: "Start Validation", icon: PlayCircle, targetState: "validating" }],
-  validating: [{ label: "Start Testing", icon: PlayCircle, targetState: "testing" }],
+  configured: [{ label: "Validate & Run Tests", icon: PlayCircle, targetState: "__pipeline__" }],
+  validating: [{ label: "Run Tests", icon: PlayCircle, targetState: "__pipeline__" }],
   testing: [{ label: "Deploy", icon: Rocket, targetState: "active" }],
 };
 
@@ -456,209 +451,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
   );
 }
 
-// ── Chain helpers ────────────────────────────────────────────────────────────
-
-/** Returns true if any endpoint in the list has an `id` set (i.e. chaining is configured). */
-function hasChaining(endpoints: AdapterEndpoint[] | undefined): boolean {
-  return !!endpoints && endpoints.some((ep) => !!ep.id);
-}
-
-/** Topological sort of endpoints by depends_on. Returns sorted list + a hasCycle flag. */
-function buildChainOrder(endpoints: AdapterEndpoint[]): { sorted: AdapterEndpoint[]; hasCycle: boolean } {
-  const byId = new Map<string, AdapterEndpoint>();
-  for (const ep of endpoints) {
-    if (ep.id) byId.set(ep.id, ep);
-  }
-
-  const visited = new Set<string>();
-  const visiting = new Set<string>();
-  const order: string[] = [];
-  let hasCycle = false;
-
-  function visit(id: string) {
-    if (visited.has(id)) return;
-    if (visiting.has(id)) { hasCycle = true; return; }
-    visiting.add(id);
-    const ep = byId.get(id);
-    if (ep?.depends_on) {
-      const deps = Array.isArray(ep.depends_on) ? ep.depends_on : [ep.depends_on];
-      for (const dep of deps) visit(dep);
-    }
-    visiting.delete(id);
-    visited.add(id);
-    order.push(id);
-  }
-
-  for (const id of byId.keys()) visit(id);
-
-  if (hasCycle) return { sorted: endpoints, hasCycle: true };
-
-  // Build sorted array: topo-ordered endpoints first, then any without id
-  const sorted: AdapterEndpoint[] = [];
-  for (const id of order) {
-    const ep = byId.get(id);
-    if (ep) sorted.push(ep);
-  }
-  for (const ep of endpoints) {
-    if (!ep.id) sorted.push(ep);
-  }
-  return { sorted, hasCycle: false };
-}
-
-function ChainPanel({ endpoints }: { endpoints: AdapterEndpoint[] }) {
-  if (!hasChaining(endpoints)) {
-    return (
-      <div style={{
-        padding: "24px 16px", textAlign: "center",
-        borderRadius: 8, border: "1px dashed var(--color-border)",
-        background: "var(--color-bg-base)",
-      }}>
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.5 }}>
-          This config doesn't use API chaining. Endpoints run independently.
-        </p>
-      </div>
-    );
-  }
-
-  const { sorted, hasCycle } = buildChainOrder(endpoints);
-  const chainEndpoints = sorted.filter((ep) => !!ep.id);
-
-  // Build a lookup for extract keys by source endpoint id
-  const extractsBySource = new Map<string, string[]>();
-  for (const ep of chainEndpoints) {
-    if (ep.id && ep.extract) {
-      extractsBySource.set(ep.id, Object.keys(ep.extract));
-    }
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      {hasCycle && (
-        <div style={{
-          padding: "8px 12px", marginBottom: 12, borderRadius: 6,
-          background: "rgba(217,119,6,0.08)", border: "1px solid rgba(217,119,6,0.2)",
-          fontSize: 12, color: "var(--color-warning-text)",
-        }}>
-          Cycle detected in dependency graph. Showing endpoints in original order.
-        </div>
-      )}
-
-      {chainEndpoints.map((ep, idx) => {
-        const deps = ep.depends_on
-          ? (Array.isArray(ep.depends_on) ? ep.depends_on : [ep.depends_on])
-          : [];
-        const injectEntries = ep.inject ? Object.entries(ep.inject) : [];
-
-        // Collect extract keys from upstream dependencies for the arrow label
-        const upstreamExtractKeys: string[] = [];
-        for (const depId of deps) {
-          const keys = extractsBySource.get(depId);
-          if (keys) upstreamExtractKeys.push(...keys);
-        }
-
-        return (
-          <div key={ep.id ?? idx}>
-            {/* Arrow connector from previous endpoint */}
-            {idx > 0 && (
-              <div style={{
-                display: "flex", flexDirection: "column", alignItems: "center",
-                padding: "4px 0",
-              }}>
-                <div style={{
-                  width: 1, height: 16,
-                  background: "var(--color-teal)",
-                }} />
-                {upstreamExtractKeys.length > 0 && (
-                  <div style={{
-                    padding: "2px 8px", borderRadius: 4,
-                    background: "rgba(56,229,205,0.08)", border: "1px solid rgba(56,229,205,0.15)",
-                    fontSize: 10, color: "var(--color-teal)", whiteSpace: "nowrap",
-                  }}>
-                    extracts: {upstreamExtractKeys.join(", ")}
-                  </div>
-                )}
-                <div style={{
-                  fontSize: 14, lineHeight: 1, color: "var(--color-teal)",
-                  marginTop: 2,
-                }}>
-                  ↓
-                </div>
-              </div>
-            )}
-
-            {/* Endpoint card */}
-            <div style={{
-              borderRadius: 8, border: "1px solid var(--color-border)",
-              background: "var(--color-bg-raised)", padding: "12px 16px",
-              display: "flex", flexDirection: "column", gap: 6,
-            }}>
-              {/* Header: method + path */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{
-                  fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-                  padding: "2px 6px", borderRadius: 4,
-                  background: "rgba(56,229,205,0.1)", color: "var(--color-teal)",
-                  fontFamily: "monospace", letterSpacing: "0.04em",
-                }}>
-                  {ep.method}
-                </span>
-                <span style={{
-                  fontSize: 13, fontWeight: 500, fontFamily: "monospace",
-                  color: "var(--color-text-primary)",
-                }}>
-                  {ep.path}
-                </span>
-              </div>
-
-              {/* ID label */}
-              <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                id: <code style={{ fontFamily: "monospace", color: "var(--color-text-secondary)" }}>{ep.id}</code>
-              </div>
-
-              {/* Depends on */}
-              {deps.length > 0 && (
-                <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                  depends on:{" "}
-                  {deps.map((d, di) => (
-                    <span key={d}>
-                      {di > 0 && ", "}
-                      <code style={{ fontFamily: "monospace", color: "var(--color-brand-light)" }}>{d}</code>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* Inject mappings */}
-              {injectEntries.length > 0 && (
-                <div style={{
-                  marginTop: 4, padding: "6px 10px", borderRadius: 6,
-                  background: "rgba(56,229,205,0.04)", border: "1px solid rgba(56,229,205,0.1)",
-                  display: "flex", flexDirection: "column", gap: 3,
-                }}>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, textTransform: "uppercase",
-                    letterSpacing: "0.05em", color: "var(--color-teal)",
-                  }}>
-                    Injects
-                  </span>
-                  {injectEntries.map(([target, template]) => (
-                    <div key={target} style={{ fontSize: 11, fontFamily: "monospace" }}>
-                      <span style={{ color: "var(--color-text-secondary)" }}>{target}</span>
-                      <span style={{ color: "var(--color-text-muted)", margin: "0 4px" }}>&larr;</span>
-                      <span style={{ color: "var(--color-brand-light)" }}>{template}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-type DetailTab = "mappings" | "history" | "validation" | "chain";
+type DetailTab = "mappings" | "history" | "validation";
 
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
@@ -687,12 +480,10 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
     }
   };
 
-  const showChainTab = hasChaining(cfg.endpoints);
   const tabs: { id: DetailTab; label: string; icon: React.ElementType }[] = [
     { id: "mappings", label: "Mappings", icon: Settings },
     { id: "history", label: "History", icon: History },
     { id: "validation", label: "Validation", icon: BarChart3 },
-    ...(showChainTab ? [{ id: "chain" as const, label: "Chain", icon: Link }] : []),
   ];
 
   return (
@@ -773,7 +564,6 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         {activeTab === "mappings" && <MappingsTable key={cfg.id} cfg={cfg} />}
         {activeTab === "history" && <HistoryPanel configId={cfg.id} currentVersion={cfg.version} />}
         {activeTab === "validation" && <ValidationPanel configId={cfg.id} />}
-        {activeTab === "chain" && <ChainPanel endpoints={cfg.endpoints ?? []} />}
       </div>
 
       {/* Meta */}
@@ -1347,6 +1137,151 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+// ── Validation pipeline (one-click validate → test) ──────────────────────────
+
+type StepStatus = "pending" | "running" | "passed" | "failed";
+type PipelineStep = { name: string; status: StepStatus; confidence?: number; analysis?: string };
+type PipelinePhase = "validating" | "testing" | "done" | "error";
+type PipelineUI = {
+  configId: string;
+  configName: string;
+  phase: PipelinePhase;
+  validation: PipelineStep[];
+  testing: PipelineStep[];
+  errorMsg?: string;
+};
+
+// Seed names — we render these as "running" the moment the user clicks, before
+// the LLM call returns, so the panel never feels stale. The LLM verdict snaps
+// each row to its real status when the request resolves.
+const VALIDATION_STEPS_SEED: string[] = [
+  "config_structure_validation",
+  "field_mapping_quality",
+  "auth_configuration_adequacy",
+  "error_handling_robustness",
+  "retry_logic_appropriateness",
+  "endpoint_configuration_validity",
+  "security_best_practices",
+];
+
+const TEST_STEPS_SEED: string[] = [
+  "auth_handshake",
+  "happy_path_endpoint",
+  "error_envelope_check",
+  "retry_behaviour",
+];
+
+function ValidationPipelinePanel({ ui, onClose }: { ui: PipelineUI; onClose: () => void }) {
+  const phaseLabel: Record<PipelinePhase, string> = {
+    validating: "Phase 1 of 2 — Validating Configuration",
+    testing: "Phase 2 of 2 — Running Smoke Tests",
+    done: "Pipeline Complete — Ready to Deploy",
+    error: "Pipeline Stopped",
+  };
+  const phaseColor: Record<PipelinePhase, string> = {
+    validating: "var(--color-primary)",
+    testing: "var(--color-primary)",
+    done: "var(--color-success-text)",
+    error: "var(--color-error-text)",
+  };
+  return (
+    <div
+      style={{
+        padding: 16,
+        borderRadius: 10,
+        border: `1px solid ${phaseColor[ui.phase]}`,
+        background: "var(--color-surface-2)",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {ui.phase === "validating" || ui.phase === "testing" ? (
+            <Loader2 style={{ width: 16, height: 16, color: phaseColor[ui.phase], animation: "spin 1s linear infinite" }} />
+          ) : ui.phase === "done" ? (
+            <CheckCircle2 style={{ width: 16, height: 16, color: phaseColor[ui.phase] }} />
+          ) : (
+            <AlertCircle style={{ width: 16, height: 16, color: phaseColor[ui.phase] }} />
+          )}
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: phaseColor[ui.phase] }}>
+              {phaseLabel[ui.phase]}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>{ui.configName}</div>
+          </div>
+        </div>
+        {(ui.phase === "done" || ui.phase === "error") && (
+          <button type="button" className="btn-secondary" style={{ fontSize: 11, padding: "4px 10px" }} onClick={onClose}>
+            Dismiss
+          </button>
+        )}
+      </div>
+      <PipelineStepGroup title="Validation dimensions" steps={ui.validation} />
+      <PipelineStepGroup title="Smoke tests" steps={ui.testing} />
+      {ui.errorMsg && (
+        <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(248,113,113,0.06)", color: "var(--color-error-text)", fontSize: 12 }}>
+          {ui.errorMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PipelineStepGroup({ title, steps }: { title: string; steps: PipelineStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--color-text-muted)", marginBottom: 6 }}>
+        {title}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {steps.map((s) => (
+          <PipelineStepRow key={s.name} step={s} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PipelineStepRow({ step }: { step: PipelineStep }) {
+  const icon =
+    step.status === "passed" ? (
+      <CheckCircle2 style={{ width: 13, height: 13, color: "var(--color-success-text)" }} />
+    ) : step.status === "failed" ? (
+      <AlertCircle style={{ width: 13, height: 13, color: "var(--color-error-text)" }} />
+    ) : step.status === "running" ? (
+      <Loader2 style={{ width: 13, height: 13, color: "var(--color-primary)", animation: "spin 1s linear infinite" }} />
+    ) : (
+      <Clock style={{ width: 13, height: 13, color: "var(--color-text-muted)" }} />
+    );
+  const label = step.name.replace(/_/g, " ");
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+        padding: "6px 10px",
+        borderRadius: 6,
+        background: "var(--color-surface-1)",
+      }}
+    >
+      {icon}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: "var(--color-text-primary)" }}>{label}</div>
+        {step.analysis && (
+          <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 2 }}>{step.analysis}</div>
+        )}
+      </div>
+      {typeof step.confidence === "number" && (
+        <span className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+          {Math.round((step.confidence || 0) * 100)}%
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Configurations() {
@@ -1356,8 +1291,6 @@ export default function Configurations() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showCompare, setShowCompare] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Configuration | null>(null);
-  const [securityReport, setSecurityReport] = useState<SecurityReport | null>(null);
-  const [securityConfigName, setSecurityConfigName] = useState("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["configurations"],
@@ -1367,6 +1300,108 @@ export default function Configurations() {
   const [lastSimResult, setLastSimResult] = useState<{
     configId: string; status: string; passed: number; total: number; steps: Array<{ step_name: string; status: string; error_message?: string }>;
   } | null>(null);
+
+  const [pipeline, setPipeline] = useState<PipelineUI | null>(null);
+
+  // One-click pipeline: configured → validate (LLM 7-dim) → testing → smoke.
+  // Optimistically renders skeleton step rows the moment the user clicks,
+  // then snaps each row to the real verdict when the LLM call resolves.
+  const runPipelineMutation = useMutation({
+    mutationFn: async ({ id, name, currentStatus }: { id: string; name: string; currentStatus: string }) => {
+      // Phase 1 — Validation
+      setPipeline({
+        configId: id,
+        configName: name,
+        phase: "validating",
+        validation: VALIDATION_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
+        testing: [],
+      });
+
+      if (currentStatus === "configured") {
+        try {
+          await configurationsApi.transition(id, "validating");
+        } catch {
+          // already validating, ignore
+        }
+      }
+
+      const valResp = await simulationsApi.run({ configuration_id: id, test_type: "integration" });
+      const valData = valResp.data;
+      const valSteps: PipelineStep[] = (valData?.steps || []).map((s: any) => ({
+        name: s.step_name,
+        status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
+        confidence: s.confidence_score ?? undefined,
+        analysis: s.error_message || undefined,
+      }));
+      setPipeline((s) => (s ? { ...s, validation: valSteps.length ? valSteps : s.validation } : s));
+
+      if (!valData || valData.status !== "passed") {
+        setPipeline((s) =>
+          s
+            ? {
+                ...s,
+                phase: "error",
+                errorMsg: valData
+                  ? `Validation: ${valData.passed_tests}/${valData.total_tests} dimensions passed`
+                  : "Validation request failed",
+              }
+            : s,
+        );
+        return;
+      }
+
+      // Phase 2 — Smoke tests
+      setPipeline((s) =>
+        s
+          ? {
+              ...s,
+              phase: "testing",
+              testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
+            }
+          : s,
+      );
+
+      try {
+        await configurationsApi.transition(id, "testing");
+      } catch {
+        // already testing, ignore
+      }
+
+      const testResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
+      const testData = testResp.data;
+      const testSteps: PipelineStep[] = (testData?.steps || []).map((s: any) => ({
+        name: s.step_name,
+        status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
+        confidence: s.confidence_score ?? undefined,
+        analysis: s.error_message || undefined,
+      }));
+      setPipeline((s) =>
+        s
+          ? {
+              ...s,
+              testing: testSteps.length ? testSteps : s.testing,
+              phase: testData && testData.status === "passed" ? "done" : "error",
+              errorMsg:
+                testData && testData.status === "passed"
+                  ? undefined
+                  : testData
+                    ? `Smoke: ${testData.passed_tests}/${testData.total_tests} tests passed`
+                    : "Smoke request failed",
+            }
+          : s,
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["configurations"] });
+      queryClient.invalidateQueries({ queryKey: ["config-history"] });
+    },
+    onError: (err: unknown) => {
+      setPipeline((s) =>
+        s ? { ...s, phase: "error", errorMsg: err instanceof Error ? err.message : "Pipeline failed" } : s,
+      );
+      toast("Validation pipeline failed.", "error");
+    },
+  });
 
   const transitionMutation = useMutation({
     mutationFn: async ({ id, targetState }: { id: string; targetState: string }) => {
@@ -1404,17 +1439,6 @@ export default function Configurations() {
     onError: () => { toast("Transition failed.", "error"); },
   });
 
-  const rollbackMutation = useMutation({
-    mutationFn: ({ id, version }: { id: string; version: number }) =>
-      configurationsApi.rollback(id, version),
-    onSuccess: (_data, vars) => {
-      queryClient.invalidateQueries({ queryKey: ["configurations"] });
-      queryClient.invalidateQueries({ queryKey: ["config-history"] });
-      toast(`Rolled back to version ${vars.version}.`, "success");
-    },
-    onError: () => { toast("Rollback failed.", "error"); },
-  });
-
   const deleteMutation = useMutation({
     mutationFn: (id: string) => configurationsApi.delete(id),
     onSuccess: () => {
@@ -1426,29 +1450,6 @@ export default function Configurations() {
       toast("Failed to delete configuration.", "error");
       setConfirmDelete(null);
     },
-  });
-
-  const batchValidateMutation = useMutation({
-    mutationFn: (configIds: string[]) => configurationsApi.batchValidate(configIds),
-    onSuccess: (resp) => {
-      const d = resp.data as Record<string, unknown> | null;
-      if (d && typeof d === "object") {
-        const valid = (d.valid_count as number | undefined) ?? (d.valid as unknown[])?.length ?? "?";
-        const invalid = (d.invalid_count as number | undefined) ?? (d.invalid as unknown[])?.length ?? "?";
-        toast(`Batch validate complete: ${valid} valid, ${invalid} invalid.`, "success");
-      } else {
-        toast("Batch validate complete.", "success");
-      }
-    },
-    onError: () => { toast("Batch validate failed.", "error"); },
-  });
-
-  const securityMutation = useMutation({
-    mutationFn: (configId: string) => securityApi.inspectConfig(configId),
-    onSuccess: (resp) => {
-      if (resp.data) setSecurityReport(resp.data);
-    },
-    onError: () => { toast("Security inspection failed.", "error"); },
   });
 
   const configs: Configuration[] = data?.data ?? [];
@@ -1476,19 +1477,6 @@ export default function Configurations() {
               onClick={() => setShowCompare(true)}
             >
               <GitCompare style={{ width: 14, height: 14 }} /> Compare
-            </button>
-          )}
-          {configs.length > 0 && (
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={batchValidateMutation.isPending}
-              onClick={() => batchValidateMutation.mutate(configs.map((c) => c.id))}
-            >
-              {batchValidateMutation.isPending
-                ? <><Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} /> Validating…</>
-                : <><ShieldCheck style={{ width: 14, height: 14 }} /> Validate All</>
-              }
             </button>
           )}
           <button
@@ -1566,56 +1554,37 @@ export default function Configurations() {
                   <div style={{ display: "flex", gap: 8 }} onClick={(e) => e.stopPropagation()}>
                     {transitions.map((t) => {
                       const TIcon = t.icon;
+                      const isPipeline = t.targetState === "__pipeline__";
+                      const busy = isPipeline
+                        ? runPipelineMutation.isPending && pipeline?.configId === cfg.id
+                        : transitionMutation.isPending;
                       return (
                         <button
-                          key={t.targetState}
+                          key={t.targetState + cfg.status}
                           type="button"
                           className="btn-secondary"
                           style={{ fontSize: 11, padding: "5px 10px" }}
-                          disabled={transitionMutation.isPending}
+                          disabled={busy || runPipelineMutation.isPending}
                           onClick={() => {
+                            if (isPipeline) {
+                              setLastSimResult(null);
+                              runPipelineMutation.mutate({ id: cfg.id, name: cfg.name, currentStatus: cfg.status });
+                              return;
+                            }
                             if (t.targetState === "active" && !window.confirm(`Deploy "${cfg.name}" to production?`)) return;
                             setLastSimResult(null);
                             transitionMutation.mutate({ id: cfg.id, targetState: t.targetState });
                           }}
                         >
-                          <TIcon style={{ width: 12, height: 12 }} />
-                          {t.label}
+                          {busy ? (
+                            <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                          ) : (
+                            <TIcon style={{ width: 12, height: 12 }} />
+                          )}
+                          {busy ? "Running…" : t.label}
                         </button>
                       );
                     })}
-                    {!["draft"].includes(cfg.status) && (
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ fontSize: 11, padding: "5px 10px" }}
-                        disabled={rollbackMutation.isPending}
-                        onClick={() => {
-                          const targetVersion = Math.max(1, cfg.version - 1);
-                          if (window.confirm(`Roll back "${cfg.name}" to version ${targetVersion}? This will revert to the previous state.`)) {
-                            rollbackMutation.mutate({ id: cfg.id, version: targetVersion });
-                          }
-                        }}
-                      >
-                        <RotateCcw style={{ width: 12, height: 12 }} />
-                        Rollback
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      style={{ fontSize: 11, padding: "5px 10px" }}
-                      disabled={securityMutation.isPending}
-                      onClick={() => {
-                        setSecurityConfigName(cfg.name);
-                        securityMutation.mutate(cfg.id);
-                      }}
-                    >
-                      {securityMutation.isPending && securityConfigName === cfg.name
-                        ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
-                        : <ShieldCheck style={{ width: 12, height: 12 }} />}
-                      Security
-                    </button>
                     <button
                       type="button"
                       className="btn-secondary"
@@ -1632,6 +1601,13 @@ export default function Configurations() {
                     transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease",
                   }} />
                 </button>
+
+                {/* Inline pipeline progress — only renders for the config that ran it */}
+                {pipeline && pipeline.configId === cfg.id && (
+                  <div style={{ padding: "12px 18px", borderTop: "1px solid var(--color-border)" }}>
+                    <ValidationPipelinePanel ui={pipeline} onClose={() => setPipeline(null)} />
+                  </div>
+                )}
 
                 {/* Simulation results after transitioning to testing */}
                 {lastSimResult && lastSimResult.configId === cfg.id && (
@@ -1705,150 +1681,6 @@ export default function Configurations() {
                 )}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Security report modal */}
-      {securityReport && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 50,
-            background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 24,
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setSecurityReport(null); }}
-        >
-          <div className="card" style={{ padding: 24, maxWidth: 680, width: "100%", maxHeight: "85vh", overflow: "auto" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <div>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: "var(--color-text-primary)", marginBottom: 4 }}>
-                  Security Report
-                </h3>
-                <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
-                  {securityConfigName} &middot; {securityReport.findings.length} finding(s) &middot; Risk: <span style={{
-                    fontWeight: 700,
-                    color: securityReport.overall_risk === "critical" ? "var(--color-error-text)"
-                      : securityReport.overall_risk === "high" ? "#f97316"
-                      : securityReport.overall_risk === "medium" ? "#eab308"
-                      : securityReport.overall_risk === "low" ? "var(--color-brand-light)"
-                      : "var(--color-success-text)",
-                  }}>{securityReport.overall_risk.toUpperCase()}</span>
-                  {securityReport.llm_augmented && <span style={{ marginLeft: 8, fontSize: 11, color: "var(--color-teal)" }}>(AI-augmented)</span>}
-                </p>
-              </div>
-              <button type="button" className="btn-secondary" style={{ padding: "4px 8px" }} onClick={() => setSecurityReport(null)}>
-                <X style={{ width: 14, height: 14 }} />
-              </button>
-            </div>
-
-            {/* Severity summary bar */}
-            {Object.keys(securityReport.summary).length > 0 && (
-              <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-                {(["critical", "high", "medium", "low", "info"] as const).map((sev) => {
-                  const count = securityReport.summary[sev] ?? 0;
-                  if (count === 0) return null;
-                  const colors: Record<string, string> = {
-                    critical: "rgba(220,38,38,0.15)",
-                    high: "rgba(249,115,22,0.15)",
-                    medium: "rgba(234,179,8,0.15)",
-                    low: "rgba(59,130,246,0.15)",
-                    info: "rgba(107,114,128,0.15)",
-                  };
-                  const textColors: Record<string, string> = {
-                    critical: "var(--color-error-text)",
-                    high: "#f97316",
-                    medium: "#eab308",
-                    low: "var(--color-brand-light)",
-                    info: "var(--color-text-muted)",
-                  };
-                  return (
-                    <div key={sev} style={{
-                      padding: "4px 10px", borderRadius: 6,
-                      background: colors[sev], color: textColors[sev],
-                      fontSize: 12, fontWeight: 600,
-                    }}>
-                      {count} {sev}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Findings list */}
-            {securityReport.findings.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 32, color: "var(--color-text-muted)" }}>
-                <ShieldCheck style={{ width: 32, height: 32, margin: "0 auto 8px", color: "var(--color-success-text)" }} />
-                <p style={{ fontSize: 14, fontWeight: 600, color: "var(--color-success-text)" }}>No security issues found</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {securityReport.findings.map((f: SecurityFinding, i: number) => {
-                  const borderColors: Record<string, string> = {
-                    critical: "rgba(220,38,38,0.4)",
-                    high: "rgba(249,115,22,0.4)",
-                    medium: "rgba(234,179,8,0.4)",
-                    low: "rgba(59,130,246,0.4)",
-                    info: "rgba(107,114,128,0.3)",
-                  };
-                  const bgColors: Record<string, string> = {
-                    critical: "rgba(220,38,38,0.06)",
-                    high: "rgba(249,115,22,0.06)",
-                    medium: "rgba(234,179,8,0.06)",
-                    low: "rgba(59,130,246,0.06)",
-                    info: "rgba(107,114,128,0.04)",
-                  };
-                  const sevTextColors: Record<string, string> = {
-                    critical: "var(--color-error-text)",
-                    high: "#f97316",
-                    medium: "#eab308",
-                    low: "var(--color-brand-light)",
-                    info: "var(--color-text-muted)",
-                  };
-                  return (
-                    <div key={i} style={{
-                      padding: "12px 14px", borderRadius: 8,
-                      border: `1px solid ${borderColors[f.severity] || "var(--color-border)"}`,
-                      background: bgColors[f.severity] || "transparent",
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-                          padding: "2px 6px", borderRadius: 4,
-                          background: borderColors[f.severity], color: sevTextColors[f.severity],
-                        }}>
-                          {f.severity}
-                        </span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)" }}>
-                          {f.title}
-                        </span>
-                        {f.source === "llm" && (
-                          <span style={{ fontSize: 10, color: "var(--color-teal)", fontWeight: 500 }}>AI</span>
-                        )}
-                      </div>
-                      <p style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6, lineHeight: 1.5 }}>
-                        {f.description}
-                      </p>
-                      <p style={{ fontSize: 12, color: "var(--color-teal)", lineHeight: 1.5 }}>
-                        <strong>Fix:</strong> {f.recommendation}
-                      </p>
-                      {f.location && (
-                        <p style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }} className="mono">
-                          {f.location}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Notes */}
-            {securityReport.notes.length > 0 && (
-              <div style={{ marginTop: 12, fontSize: 11, color: "var(--color-text-muted)", fontStyle: "italic" }}>
-                {securityReport.notes.map((n, i) => <p key={i}>{n}</p>)}
-              </div>
-            )}
           </div>
         </div>
       )}

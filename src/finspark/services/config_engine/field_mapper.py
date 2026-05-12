@@ -156,43 +156,24 @@ class FieldMapper:
             f"{k} ↔ {', '.join(v[:3])}" for k, v in list(FIELD_SYNONYMS.items())[:8]
         )
 
-        prompt = f"""You are mapping fields between a parsed document and an adapter's API schema for an Indian fintech integration. Accurate mappings drive automated config generation — calibrate confidence honestly.
-
-# Source fields (from the document)
-{json.dumps(source_names)}
-
-# Target fields (from the adapter schema)
-{json.dumps(target_names)}
-
-# Indian fintech synonyms (treat as exact matches)
-{synonym_examples}
-
-# Confidence calibration (use the full range)
-- 0.95-1.00: exact synonym or identical (`pan` ↔ `pan_number`, `dob` ↔ `date_of_birth`)
-- 0.80-0.94: same semantic meaning with naming variation (`mobile_no` ↔ `phone`, `customer_name` ↔ `applicant_full_name`)
-- 0.60-0.79: probable match, requires review (`score` ↔ `credit_score` when context is unclear)
-- 0.40-0.59: weak match, type-compatible only
-- 0.00-0.39: no good match — leave target as empty string
-
-# Transformation suggestions
-Pick from: `none | upper | lower | parse_number | parse_date | parse_boolean | normalize_phone | validate_email | to_string | format_date`
-- Strings to numbers / numbers to strings → `parse_number` / `to_string`
-- ISO date ↔ display date → `parse_date` / `format_date`
-- Phone numbers from various formats → `normalize_phone` (strips spaces, adds country code)
-- Boolean strings ("yes"/"no"/"1"/"0") → `parse_boolean`
-
-# Rules
-1. EVERY source field must appear in the output exactly once.
-2. NO target field assigned to more than one source.
-3. If no plausible match, set target to "" and confidence to 0.0.
-4. Provide `reason` explaining the match in one short phrase.
-
-# Output (return ONLY this JSON, no markdown fences)
-{{
-  "mappings": [
-    {{"source": "...", "target": "...", "confidence": 0.0, "transformation": "none", "reason": "..."}}
-  ]
-}}"""
+        prompt = (
+            "You are an expert at mapping API fields for Indian fintech integrations.\n"
+            f"Given these source fields from a document: {source_names}\n"
+            f"And these target fields from an adapter schema: {target_names}\n"
+            "Map each source field to the best matching target field. Consider:\n"
+            "- Semantic meaning (pan_number ↔ permanent_account_number)\n"
+            "- Indian fintech domain knowledge (CIBIL, eKYC, GST, UPI, Aadhaar, PAN)\n"
+            "- Data type compatibility\n"
+            f"- Known synonyms: {synonym_examples}\n"
+            "Rules:\n"
+            "- Every source field must appear exactly once in the output.\n"
+            "- If no good match exists for a source field, set target to empty string and confidence to 0.0.\n"
+            "- Do not assign the same target to more than one source field.\n"
+            'Return ONLY valid JSON: {"mappings": [{"source": "...", "target": "...", '
+            '"confidence": 0.0-1.0, '
+            '"transformation": "none|upper|lower|parse_number|parse_date|normalize_phone|validate_email|to_string|format_date|parse_boolean", '
+            '"reason": "..."}]}'
+        )
 
         try:
             data = await client.generate_json(prompt, temperature=0.1)

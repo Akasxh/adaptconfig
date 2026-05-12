@@ -14,10 +14,8 @@ import type {
   DocumentDetail,
   FieldMapping,
   HealthStatus,
-  LintReport,
   PaginatedResponse,
   SearchResponse,
-  SecurityReport,
   Simulation,
   VersionComparisonResponse,
 } from "@/types";
@@ -31,6 +29,7 @@ const api = axios.create({
   headers: {
     "Content-Type": "application/json",
     "X-Tenant-ID": "default",
+    "X-Tenant-Role": "admin",
   },
 });
 
@@ -166,7 +165,6 @@ export const documentsApi = {
     return api
       .post<APIResponse<Document>>(`/api/v1/documents/upload?doc_type=${docType}`, form, {
         headers: { "Content-Type": "multipart/form-data" },
-        timeout: 120_000, // Upload + initial processing can take longer
       })
       .then((r) => r.data);
   },
@@ -187,9 +185,7 @@ export const configurationsApi = {
     auto_map?: boolean;
   }) =>
     api
-      .post<APIResponse<Configuration>>("/api/v1/configurations/generate", params, {
-        timeout: 120_000, // LLM config generation can take longer than default 30s
-      })
+      .post<APIResponse<Configuration>>("/api/v1/configurations/generate", params)
       .then((r) => r.data),
   validate: (id: string) =>
     api
@@ -341,20 +337,6 @@ export const searchApi = {
       .then((r) => r.data),
 };
 
-export const securityApi = {
-  inspectSpec: (specText: string, format: "yaml" | "json" = "yaml") =>
-    api
-      .post<APIResponse<SecurityReport>>("/api/v1/security/inspect-spec", {
-        spec_text: specText,
-        format,
-      })
-      .then((r) => r.data),
-  inspectConfig: (configId: string) =>
-    api
-      .post<APIResponse<SecurityReport>>(`/api/v1/security/inspect-config/${configId}`)
-      .then((r) => r.data),
-};
-
 interface WebhookEntry {
   id: string;
   tenant_id: string;
@@ -381,13 +363,6 @@ export const webhooksApi = {
     api.delete<APIResponse<null>>(`/api/v1/webhooks/${id}`).then((r) => r.data),
   test: (id: string) =>
     api.post<APIResponse<WebhookTestResult>>(`/api/v1/webhooks/${id}/test`, {}).then((r) => r.data),
-};
-
-export const lintApi = {
-  lint: (spec_text: string, format: "yaml" | "json" = "yaml") =>
-    api
-      .post<APIResponse<LintReport>>("/api/v1/lint/", { spec_text, format })
-      .then((r) => r.data),
 };
 
 export default api;

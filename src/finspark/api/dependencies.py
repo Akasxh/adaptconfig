@@ -1,7 +1,5 @@
 """FastAPI dependencies for dependency injection."""
 
-from dataclasses import dataclass
-
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,21 +13,6 @@ from finspark.services.parsing.document_parser import DocumentParser
 from finspark.services.registry.adapter_registry import AdapterRegistry
 from finspark.services.registry.deprecation import DeprecationTracker
 from finspark.services.simulation.simulator import IntegrationSimulator
-
-
-@dataclass(frozen=True, slots=True)
-class RequestContext:
-    """Metadata extracted from the HTTP request for audit logging."""
-
-    ip_address: str
-    user_agent: str
-
-
-def get_request_context(request: Request) -> RequestContext:
-    """Extract client IP and user-agent from the incoming request."""
-    ip = request.client.host if request.client else ""
-    ua = request.headers.get("user-agent", "")
-    return RequestContext(ip_address=ip, user_agent=ua)
 
 
 def get_tenant_context(request: Request) -> TenantContext:

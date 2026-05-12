@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, HttpUrl
 
 class WebhookCreate(BaseModel):
     url: HttpUrl
-    secret: str | None = None
+    secret: str
     events: list[str] = []
     is_active: bool = True
 

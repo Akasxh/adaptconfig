@@ -4,7 +4,6 @@ import type { Document } from "@/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
-  CheckCircle2,
   FileCode,
   FileSpreadsheet,
   FileText,
@@ -39,22 +38,6 @@ const S = {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type LintFinding = {
-  code: string;
-  message: string;
-  severity: "error" | "warning" | "info" | "hint";
-  path: string;
-  range: string;
-};
-
-type LintReport = {
-  findings: LintFinding[];
-  error_count: number;
-  warning_count: number;
-  info_count: number;
-  spectral_available: boolean;
-};
-
 type ParsedResult = {
   title?: string;
   summary?: string;
@@ -74,11 +57,10 @@ type ParsedResult = {
   services_identified?: string[];
   raw_entities?: string[];
   parse_errors?: string[];
-  lint_report?: LintReport | null;
 };
 
 type DocumentDetail = Document & { parsed_result?: ParsedResult };
-type DetailTab = "summary" | "endpoints" | "fields" | "auth" | "quality" | "raw";
+type DetailTab = "summary" | "endpoints" | "fields" | "auth" | "raw";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -189,15 +171,11 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
   const parsed = detail?.parsed_result;
   const FileIcon = fileIcon(doc.file_type);
 
-  const lintReport = parsed?.lint_report;
-  const hasLint = lintReport && lintReport.findings.length > 0;
-
   const tabs: { id: DetailTab; label: string; Icon: React.ElementType }[] = [
     { id: "summary", label: "Summary", Icon: FileText },
     { id: "endpoints", label: `Endpoints${parsed?.endpoints?.length ? ` (${parsed.endpoints.length})` : ""}`, Icon: Link2 },
     { id: "fields", label: `Fields${parsed?.fields?.length ? ` (${parsed.fields.length})` : ""}`, Icon: Layers },
     { id: "auth", label: "Auth", Icon: Shield },
-    ...(lintReport ? [{ id: "quality" as DetailTab, label: `API Quality${hasLint ? ` (${lintReport.findings.length})` : ""}`, Icon: CheckCircle2 }] : []),
     { id: "raw", label: "Raw JSON", Icon: FileCode },
   ];
 
@@ -351,8 +329,6 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
                 ))}
               </div>
             ) : <EmptyCenter>No auth requirements extracted.</EmptyCenter>
-          ) : tab === "quality" ? (
-            <ApiQualityTab lintReport={lintReport ?? null} />
           ) : (
             <pre style={{ background: "var(--color-bg-base)", border: "1px solid var(--color-border)", borderRadius: "0.5rem", padding: "1rem", fontSize: "0.75rem", ...S.textSecondary, overflowX: "auto", lineHeight: 1.6 }}>
               {JSON.stringify(detail, null, 2)}
@@ -412,90 +388,6 @@ function SummaryTab({ parsed }: { parsed: ParsedResult }) {
   );
 }
 
-// ── API Quality tab ───────────────────────────────────────────────────────────
-
-const SEVERITY_STYLE: Record<string, { bg: string; text: string; border: string }> = {
-  error: { bg: "rgba(220,38,38,0.12)", text: "#f87171", border: "rgba(220,38,38,0.3)" },
-  warning: { bg: "rgba(217,119,6,0.10)", text: "#fbbf24", border: "rgba(217,119,6,0.3)" },
-  info: { bg: "rgba(59,130,246,0.10)", text: "#60a5fa", border: "rgba(59,130,246,0.3)" },
-  hint: { bg: "rgba(71,85,105,0.10)", text: "#94a3b8", border: "rgba(71,85,105,0.3)" },
-};
-
-function SeverityBadge({ severity, count }: { severity: string; count: number }) {
-  const style = SEVERITY_STYLE[severity] ?? SEVERITY_STYLE.hint;
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", padding: "0.125rem 0.5rem", borderRadius: "9999px", fontSize: "0.6875rem", fontWeight: 700, background: style.bg, color: style.text, border: `1px solid ${style.border}` }}>
-      {count} {severity}{count !== 1 ? "s" : ""}
-    </span>
-  );
-}
-
-function ApiQualityTab({ lintReport }: { lintReport: LintReport | null }) {
-  const [expanded, setExpanded] = useState(true);
-
-  if (!lintReport) {
-    return <EmptyCenter>No lint data available.</EmptyCenter>;
-  }
-
-  if (!lintReport.spectral_available) {
-    return (
-      <div style={{ ...S.raised, padding: "1rem", fontSize: "0.8125rem", ...S.textSecondary }}>
-        Spectral linter is not installed on this server. Install it to enable API quality checks.
-      </div>
-    );
-  }
-
-  const { findings, error_count, warning_count, info_count } = lintReport;
-
-  if (findings.length === 0) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.75rem", padding: "2rem", textAlign: "center" }}>
-        <CheckCircle2 style={{ width: 32, height: 32, color: "var(--color-teal)" }} />
-        <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--color-teal)" }}>No issues found</p>
-        <p style={{ fontSize: "0.8125rem", ...S.textMuted }}>This API spec passed all Spectral lint rules.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {/* Severity summary badges */}
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-        {error_count > 0 && <SeverityBadge severity="error" count={error_count} />}
-        {warning_count > 0 && <SeverityBadge severity="warning" count={warning_count} />}
-        {info_count > 0 && <SeverityBadge severity="info" count={info_count} />}
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", ...S.brandText, padding: "0.25rem 0.5rem" }}
-        >
-          {expanded ? "Collapse" : "Expand"}
-        </button>
-      </div>
-
-      {/* Findings list */}
-      {expanded && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          {findings.map((f, i) => {
-            const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.hint;
-            return (
-              <div key={`${f.code}-${i}`} style={{ ...S.raised, padding: "0.75rem 1rem", borderLeft: `3px solid ${style.text}` }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
-                  <span style={{ fontSize: "0.6875rem", fontWeight: 700, color: style.text, textTransform: "uppercase" }}>{f.severity}</span>
-                  <code style={{ ...S.mono, fontSize: "0.75rem", ...S.brandText }}>{f.code}</code>
-                  {f.range && <span style={{ fontSize: "0.6875rem", ...S.textMuted, marginLeft: "auto" }}>L{f.range}</span>}
-                </div>
-                <p style={{ fontSize: "0.8125rem", ...S.textSecondary }}>{f.message}</p>
-                {f.path && <p style={{ fontSize: "0.6875rem", ...S.textMuted, ...S.mono, marginTop: "0.25rem" }}>{f.path}</p>}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Documents page ─────────────────────────────────────────────────────────────
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: page-level component managing upload, list, modals
@@ -512,12 +404,6 @@ export default function Documents() {
   const { data, error, isLoading } = useQuery({
     queryKey: ["documents"],
     queryFn: () => documentsApi.list(),
-    // Poll every 3s while any document is still parsing (LLM runs in background)
-    refetchInterval: (query) => {
-      const docs = query.state.data?.data;
-      if (docs && docs.some((d: Document) => d.status === "parsing")) return 3000;
-      return false;
-    },
   });
 
   const uploadMutation = useMutation({

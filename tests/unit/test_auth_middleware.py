@@ -118,12 +118,12 @@ class TestDevelopmentModeHeaders:
         assert DEFAULT_TENANT_ID in body
         assert DEFAULT_TENANT_NAME in body
 
-    def test_default_role_is_viewer_in_dev(self) -> None:
-        """Dev mode defaults to viewer to avoid accidental privilege escalation."""
+    def test_default_role_is_admin_in_dev(self) -> None:
+        """Dev mode defaults to admin for convenience during development."""
         client = TestClient(_make_app(), raise_server_exceptions=True)
         resp = client.get("/", headers={"X-Tenant-ID": "t1"})
         assert resp.status_code == 200
-        assert "viewer" in resp.text
+        assert "admin" in resp.text
 
     def test_explicit_role_header_is_respected(self) -> None:
         client = TestClient(_make_app(), raise_server_exceptions=True)

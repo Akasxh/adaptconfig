@@ -1,15 +1,12 @@
-"""Async OpenAI LLM client (GPT-5 family) using the chat completions REST API.
+"""Async OpenAI Chat Completions client.
 
-Endpoint: https://api.openai.com/v1/chat/completions
+Surface-compatible with :class:`finspark.services.llm.client.GeminiClient` —
+exposes the same ``generate`` / ``generate_json`` methods so call sites that
+were written against the Gemini client keep working unchanged.
 
-Notes vs the OpenRouterClient:
-- Uses `max_completion_tokens` (not `max_tokens`). GPT-5 reasoning models reject the
-  legacy field.
-- GPT-5 (`gpt-5`, `gpt-5-mini`) are reasoning models that consume tokens internally
-  before producing output. Default budget is generous (8192) so structured JSON has
-  room to complete after the reasoning pass.
-- GPT-5 reasoning models only support the default temperature (1.0); we omit
-  `temperature` from the body so we don't get a 400 from the API.
+``OpenAIAPIError`` subclasses ``GeminiAPIError`` so ``except GeminiAPIError``
+clauses scattered across the codebase keep catching provider errors regardless
+of which client is active.
 """
 from __future__ import annotations
 
@@ -20,32 +17,33 @@ from typing import Any
 import httpx
 
 from finspark.core.config import settings
+from finspark.services.llm.client import GeminiAPIError
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://api.openai.com/v1"
-
-# Models that are reasoning-only and reject temperature/non-default sampling params.
-# Any model id that starts with one of these prefixes is treated as a reasoning model.
-_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 
-def _is_reasoning_model(model: str) -> bool:
-    return any(model.startswith(p) for p in _REASONING_MODEL_PREFIXES)
+class OpenAIAPIError(GeminiAPIError):
+    """Raised when the OpenAI API returns an error or unexpected response.
+
+    Subclass of GeminiAPIError so the many ``except GeminiAPIError`` blocks
+    written when this codebase was Gemini-only continue to catch failures.
+    """
 
 
 class OpenAIClient:
-    """Thin async wrapper around the OpenAI chat completions API."""
+    """Thin async wrapper around the OpenAI Chat Completions REST API."""
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
         model: str | None = None,
-        timeout: float = 180.0,
+        timeout: float = 60.0,
     ) -> None:
         self.api_key = api_key or settings.openai_api_key
-        self.model = model or settings.llm_model
+        self.model = model or (settings.llm_model or "gpt-4.1-nano")
         self.timeout = timeout
 
         if not self.api_key:
@@ -74,67 +72,51 @@ class OpenAIClient:
         temperature: float = 0.2,
         max_tokens: int = 4096,
         response_json: bool = False,
-        model: str | None = None,
     ) -> str:
-        """Send a prompt to OpenAI and return the text response."""
-        from finspark.services.llm.client import LLMAPIError
-
-        url = f"{_BASE_URL}/chat/completions"
-        effective_model = model or self.model
-
+        """Send a prompt to OpenAI and return the assistant text content."""
         messages: list[dict[str, str]] = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
         messages.append({"role": "user", "content": prompt})
 
         body: dict[str, Any] = {
-            "model": effective_model,
+            "model": self.model,
             "messages": messages,
-            "max_completion_tokens": max_tokens,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
-
-        # Reasoning models only accept the default temperature — omit the field entirely
-        # rather than send a value the API will reject.
-        if not _is_reasoning_model(effective_model):
-            body["temperature"] = temperature
-
         if response_json:
             body["response_format"] = {"type": "json_object"}
 
         try:
-            resp = await self._client.post(url, json=body)
+            resp = await self._client.post(_CHAT_URL, json=body)
         except httpx.TimeoutException as exc:
-            logger.error("openai_timeout model=%s", effective_model)
-            raise LLMAPIError("OpenAI API request timed out") from exc
+            logger.error("openai_timeout model=%s", self.model)
+            raise OpenAIAPIError("OpenAI API request timed out") from exc
         except httpx.NetworkError as exc:
-            logger.error("openai_network_error model=%s error=%s", effective_model, exc)
-            raise LLMAPIError(f"Network error communicating with OpenAI: {exc}") from exc
+            logger.error("openai_network_error model=%s error=%s", self.model, exc)
+            raise OpenAIAPIError(f"Network error communicating with OpenAI: {exc}") from exc
 
         if resp.status_code != 200:
             safe_body = resp.text[:300]
-            logger.error(
-                "openai_api_error status=%s body=%s", resp.status_code, safe_body
-            )
-            raise LLMAPIError(
-                f"OpenAI API returned {resp.status_code}: {safe_body}"
-            )
+            logger.error("openai_api_error status=%s body=%s", resp.status_code, safe_body)
+            raise OpenAIAPIError(f"OpenAI API returned {resp.status_code}: {safe_body}")
 
         data = resp.json()
         try:
             choice = data["choices"][0]
-            content = choice["message"]["content"]
+            finish = choice.get("finish_reason", "")
+            content = (choice.get("message") or {}).get("content")
             if not content:
-                finish = choice.get("finish_reason", "")
-                # GPT-5 with too-low max_completion_tokens returns empty + finish=length
-                # because reasoning consumed the entire budget. Surface this clearly.
-                raise LLMAPIError(
-                    f"Empty response from OpenAI (finish_reason={finish}, model={effective_model}). "
-                    "If finish_reason=length, increase max_tokens — reasoning models need headroom."
-                )
+                if finish == "length":
+                    raise OpenAIAPIError(
+                        "OpenAI response truncated (finish_reason=length) — increase max_tokens"
+                    )
+                raise OpenAIAPIError(f"Empty response from OpenAI (finish_reason={finish})")
             return content
         except (KeyError, IndexError) as exc:
             logger.error("openai_unexpected_response data=%s", data)
-            raise LLMAPIError("Unexpected response structure from OpenAI") from exc
+            raise OpenAIAPIError("Unexpected response structure from OpenAI") from exc
 
     async def generate_json(
         self,
@@ -143,31 +125,17 @@ class OpenAIClient:
         system_instruction: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-        model: str | None = None,
     ) -> dict[str, Any]:
         """Generate and parse a JSON response from OpenAI."""
-        from finspark.services.llm.client import LLMAPIError
-
         text = await self.generate(
             prompt,
             system_instruction=system_instruction,
             temperature=temperature,
             max_tokens=max_tokens,
             response_json=True,
-            model=model,
         )
-        # OpenAI's json_object response_format is strict; we still strip
-        # markdown fences defensively in case a fine-tune or future model wraps them.
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            first_newline = cleaned.find("\n")
-            if first_newline != -1:
-                cleaned = cleaned[first_newline + 1:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
         try:
-            return json.loads(cleaned)
+            return json.loads(text)
         except json.JSONDecodeError as exc:
             logger.error("openai_json_parse_error text=%s", text[:500])
-            raise LLMAPIError(f"Failed to parse OpenAI JSON response: {exc}") from exc
+            raise OpenAIAPIError(f"Failed to parse OpenAI JSON response: {exc}") from exc

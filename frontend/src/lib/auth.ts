@@ -47,31 +47,6 @@ export function clearTokens(): void {
   localStorage.removeItem(USER_KEY);
 }
 
-/**
- * Decode the payload of a JWT without verifying the signature.
- * Security relies on server-side validation; this is only for client-side
- * expiry checks to avoid sending expired tokens.
- */
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    // Base64url -> Base64 -> decode
-    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const json = atob(base64);
-    return JSON.parse(json) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 export function isAuthenticated(): boolean {
-  const token = getToken();
-  if (!token) return false;
-
-  const payload = decodeJwtPayload(token);
-  if (!payload || typeof payload.exp !== "number") return false;
-
-  // Reject if token expired (compare against current UTC epoch seconds)
-  return payload.exp > Date.now() / 1000;
+  return !!getToken();
 }

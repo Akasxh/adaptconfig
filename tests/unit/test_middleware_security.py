@@ -120,11 +120,11 @@ class TestTenantMiddleware:
         resp = client.get("/")
         assert DEFAULT_TENANT_NAME in resp.text
 
-    def test_missing_role_uses_viewer_default_in_dev(self) -> None:
+    def test_missing_role_uses_admin_default_in_dev(self) -> None:
         app = _make_app(TenantMiddleware)
         client = TestClient(app)
         resp = client.get("/", headers={"X-Tenant-ID": "t1"})
-        assert "viewer" in resp.text
+        assert "admin" in resp.text
 
     def test_response_echoes_tenant_id_header(self) -> None:
         app = _make_app(TenantMiddleware)

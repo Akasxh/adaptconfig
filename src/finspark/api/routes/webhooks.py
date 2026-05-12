@@ -2,7 +2,6 @@
 
 import json
 import logging
-import secrets
 import time
 import uuid
 from datetime import UTC, datetime
@@ -12,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.api.dependencies import RequestContext, get_audit_service, get_request_context, get_tenant_context, require_role
+from finspark.api.dependencies import get_audit_service, get_tenant_context, require_role
 from finspark.core.audit import AuditService
 from finspark.core.database import get_db
 from finspark.core.security import encrypt_value
@@ -44,20 +43,16 @@ async def register_webhook(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
-    req_ctx: RequestContext = Depends(get_request_context),
 ) -> APIResponse[WebhookResponse]:
     """Register a new webhook endpoint."""
     if not is_safe_url(str(body.url)):
         raise HTTPException(status_code=400, detail="URL resolves to a blocked or private network address")
 
-    # Auto-generate a cryptographically secure secret if none provided
-    webhook_secret = body.secret if body.secret else secrets.token_urlsafe(32)
-
     wh = Webhook(
         id=str(uuid.uuid4()),
         tenant_id=tenant.tenant_id,
         url=str(body.url),
-        secret=encrypt_value(webhook_secret),
+        secret=encrypt_value(body.secret),
         events=json.dumps(body.events),
         is_active=body.is_active,
     )
@@ -71,8 +66,6 @@ async def register_webhook(
         resource_type="webhook",
         resource_id=wh.id,
         details={"url": str(body.url), "events": body.events},
-        ip_address=req_ctx.ip_address,
-        user_agent=req_ctx.user_agent,
     )
     return APIResponse(data=_webhook_to_response(wh), message="Webhook registered")
 
@@ -111,7 +104,6 @@ async def delete_webhook(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = require_role("admin", "editor"),
     audit: AuditService = Depends(get_audit_service),
-    req_ctx: RequestContext = Depends(get_request_context),
 ) -> APIResponse[None]:
     """Delete a webhook."""
     stmt = select(Webhook).where(Webhook.id == webhook_id, Webhook.tenant_id == tenant.tenant_id)
@@ -127,8 +119,6 @@ async def delete_webhook(
         resource_type="webhook",
         resource_id=webhook_id,
         details={},
-        ip_address=req_ctx.ip_address,
-        user_agent=req_ctx.user_agent,
     )
     return APIResponse(message="Webhook deleted")
 
@@ -139,7 +129,6 @@ async def test_webhook(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_tenant_context),
     audit: AuditService = Depends(get_audit_service),
-    req_ctx: RequestContext = Depends(get_request_context),
 ) -> APIResponse[WebhookDeliveryResponse]:
     """Send a test event to a webhook."""
     stmt = select(Webhook).where(Webhook.id == webhook_id, Webhook.tenant_id == tenant.tenant_id)
@@ -194,8 +183,6 @@ async def test_webhook(
         resource_type="webhook",
         resource_id=webhook_id,
         details={"status": delivery.status, "response_code": delivery.response_code},
-        ip_address=req_ctx.ip_address,
-        user_agent=req_ctx.user_agent,
     )
 
     return APIResponse(

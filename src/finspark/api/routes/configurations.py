@@ -42,11 +42,9 @@ from finspark.schemas.configurations import (
     ConfigurationResponse,
     ConfigValidationResult,
     FieldMapping,
-    FieldReviewFlagSchema,
     GenerateConfigRequest,
     RollbackRequest,
     RollbackResponse,
-    TieredValidationResponse,
     TransitionRequest,
     TransitionResponse,
     VersionComparisonResponse,
@@ -54,7 +52,6 @@ from finspark.schemas.configurations import (
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
-from finspark.services.config_engine.validator import ConfigValidator
 from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
 from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
@@ -477,11 +474,32 @@ def _augment_with_rule_based(
             merged["is_confirmed"] = rule_m.get("is_confirmed", merged.get("is_confirmed", False))
         augmented.append(merged)
 
-    # Backfill source fields that LLM missed but rule-based found
+    # Backfill source fields that LLM missed but rule-based found.
+    # Skip rule mappings with no resolved target — they add only noise.
     for rule_m in rule_mappings:
         src = rule_m.get("source_field", "")
-        if src and src not in existing_targets:
+        if src and src not in existing_targets and rule_m.get("target_field"):
             augmented.append(rule_m)
+
+    # Final pass: drop any mapping whose target is unresolved (LLM or rule).
+    # The validator's field_mapping_quality dimension penalises configs that carry
+    # zero-confidence "we tried but couldn't match" entries — they communicate
+    # nothing useful at runtime and are best omitted from the persisted config.
+    augmented = [
+        m for m in augmented
+        if m.get("target_field") and (m.get("confidence") or 0) > 0
+    ]
+
+    # Collapse duplicate target_field entries — keep the highest-confidence source
+    # for each target. Prevents the LLM's "must map exactly once" rule from
+    # producing semantically wrong fallbacks (e.g. aadhaar_number -> pan_number)
+    # when both 'aadhaar' and 'aadhaar_number' appear as source fields.
+    by_target: dict[str, dict[str, Any]] = {}
+    for m in augmented:
+        tgt = m["target_field"]
+        if tgt not in by_target or (m.get("confidence") or 0) > (by_target[tgt].get("confidence") or 0):
+            by_target[tgt] = m
+    augmented = list(by_target.values())
 
     result = dict(base_config)
     result["field_mappings"] = augmented
@@ -537,9 +555,7 @@ async def generate_configuration(
         else {},
     }
 
-    use_llm = settings.ai_enabled and (
-        bool(settings.openai_api_key) or bool(settings.openrouter_api_key) or bool(settings.gemini_api_key)
-    )
+    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
     generation_path = "rule_based"
     config: dict[str, Any] = {}
 
@@ -606,6 +622,18 @@ async def generate_configuration(
     for fm in raw_mappings:
         if fm.get("target_field") and fm.get("confidence", 0) < 0.5:
             fm["confidence"] = max(fm.get("confidence", 0), 0.6)
+
+    # Drop unresolved mappings + collapse duplicate targets — applied to both
+    # LLM and rule-based paths so the persisted config_mappings only contain
+    # actionable, high-signal entries the validator will score well on.
+    by_target: dict[str, dict[str, Any]] = {}
+    for m in raw_mappings:
+        tgt = m.get("target_field")
+        if not tgt or (m.get("confidence") or 0) <= 0:
+            continue
+        if tgt not in by_target or (m.get("confidence") or 0) > (by_target[tgt].get("confidence") or 0):
+            by_target[tgt] = m
+    config["field_mappings"] = list(by_target.values())
 
     # Save configuration
     configuration = Configuration(
@@ -743,28 +771,12 @@ async def update_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    previous_value = config.full_config
-
     if body.name is not None:
         config.name = body.name
     if body.field_mappings is not None:
         config.field_mappings = json.dumps([fm.model_dump() for fm in body.field_mappings])
     if body.notes is not None:
         config.notes = body.notes
-
-    # Increment version and create history entry for the update
-    config.version += 1
-
-    history = ConfigurationHistory(
-        tenant_id=tenant.tenant_id,
-        configuration_id=config.id,
-        version=config.version,
-        change_type="update",
-        previous_value=previous_value,
-        new_value=config.full_config,
-        changed_by=tenant.tenant_name,
-    )
-    db.add(history)
 
     await db.flush()
     await db.refresh(config)
@@ -774,7 +786,7 @@ async def update_configuration(
         action="update",
         resource_type="configuration",
         resource_id=config_id,
-        details={"updated_fields": [k for k, v in body.model_dump().items() if v is not None], "version": config.version},
+        details={"updated_fields": [k for k, v in body.model_dump().items() if v is not None]},
     )
 
     return APIResponse(success=True, data=_serialize_config(config), message="Configuration updated")
@@ -800,53 +812,6 @@ async def validate_configuration(
     full_config = json.loads(config.full_config) if config.full_config else {}
 
     return APIResponse(data=_validate_config(full_config))
-
-
-@router.post(
-    "/{config_id}/validate-confidence",
-    response_model=APIResponse[TieredValidationResponse],
-)
-async def validate_with_confidence(
-    config_id: str,
-    db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(get_tenant_context),
-) -> APIResponse[TieredValidationResponse]:
-    """Run confidence-aware validation on a configuration."""
-    stmt = select(Configuration).where(
-        Configuration.id == config_id,
-        Configuration.tenant_id == tenant.tenant_id,
-    )
-    result = await db.execute(stmt)
-    config = result.scalar_one_or_none()
-
-    if not config:
-        raise HTTPException(status_code=404, detail="Configuration not found")
-
-    full_config = json.loads(config.full_config) if config.full_config else {}
-    validator = ConfigValidator()
-    tiered = validator.validate_with_confidence(full_config)
-
-    return APIResponse(
-        data=TieredValidationResponse(
-            passed=tiered.passed,
-            strategy_used=tiered.strategy_used,
-            errors=tiered.errors,
-            warnings=tiered.warnings,
-            field_flags=[
-                FieldReviewFlagSchema(
-                    field_mapping=f.field_mapping,
-                    confidence=f.confidence,
-                    action=f.action,
-                    reason=f.reason,
-                )
-                for f in tiered.field_flags
-            ],
-            review_required=tiered.review_required,
-            auto_approved_count=tiered.auto_approved_count,
-            needs_review_count=tiered.needs_review_count,
-        ),
-        message=f"Confidence validation completed using {tiered.strategy_used} strategy",
-    )
 
 
 @router.post("/{config_id}/transition", response_model=APIResponse[TransitionResponse])

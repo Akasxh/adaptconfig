@@ -18,16 +18,12 @@ from sqlalchemy.pool import StaticPool
 
 # Import all models so Base.metadata has complete table definitions
 import finspark.models.adapter  # noqa: F401
-import finspark.models.api_call_log  # noqa: F401
 import finspark.models.audit  # noqa: F401
 import finspark.models.configuration  # noqa: F401
-import finspark.models.contract_test  # noqa: F401
-import finspark.models.external_api_audit  # noqa: F401
 import finspark.models.document  # noqa: F401
 import finspark.models.simulation  # noqa: F401
 import finspark.models.tenant  # noqa: F401
 import finspark.models.webhook  # noqa: F401
-import finspark.models.workflow  # noqa: F401
 from finspark.core.database import get_db
 from finspark.main import app
 from finspark.models.base import Base

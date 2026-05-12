@@ -17,12 +17,8 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
-class LLMAPIError(Exception):
-    """Raised when an LLM API returns an error or unexpected response."""
-
-
-# Backward-compatible alias
-GeminiAPIError = LLMAPIError
+class GeminiAPIError(Exception):
+    """Raised when the Gemini API returns an error or unexpected response."""
 
 
 class GeminiClient:
@@ -153,32 +149,32 @@ class GeminiClient:
 # ---------------------------------------------------------------------------
 # Module-level shared client (created lazily, closed by app lifespan)
 # ---------------------------------------------------------------------------
-_shared_client: GeminiClient | OpenRouterClient | OpenAIClient | None = None
+# Note: typed as ``Any`` because the actual instance may be either
+# ``GeminiClient`` or ``OpenAIClient`` depending on ``settings.llm_provider``.
+# Both expose the same ``generate`` / ``generate_json`` / ``close`` surface.
+_shared_client: Any | None = None
 
 
-def _create_client() -> GeminiClient | OpenRouterClient | OpenAIClient:
-    """Instantiate the correct LLM client based on settings."""
-    if settings.llm_provider == "openai" and settings.openai_api_key:
-        from finspark.services.llm.openai_client import OpenAIClient as _OAI
-        return _OAI()
-    if settings.llm_provider == "openrouter" and settings.openrouter_api_key:
-        from finspark.services.llm.openrouter_client import OpenRouterClient as _ORC
-        return _ORC()
-    return GeminiClient()
-
-
-def get_llm_client() -> GeminiClient | OpenRouterClient | OpenAIClient:
+def get_llm_client() -> Any:
     """Return (or lazily create) the module-level shared LLM client.
 
-    Dispatches based on ``settings.llm_provider``:
-    - ``"openai"`` (with a key set) -> :class:`OpenAIClient` (GPT-5 family)
-    - ``"openrouter"`` (with a key set) -> :class:`OpenRouterClient`
-    - Otherwise falls back to :class:`GeminiClient`
+    Dispatches on ``settings.llm_provider``:
 
-    The lifespan handler in main.py calls ``_shared_client.close()`` on shutdown
-    so the httpx connection pool is released cleanly.
+    * ``"openai"`` → :class:`finspark.services.llm.openai_client.OpenAIClient`
+    * anything else (default) → :class:`GeminiClient`
+
+    The lifespan handler in ``main.py`` calls ``_shared_client.close()`` on
+    shutdown so the httpx connection pool is released cleanly regardless of
+    which provider is active.
     """
     global _shared_client  # noqa: PLW0603
     if _shared_client is None:
-        _shared_client = _create_client()
+        from finspark.core.config import settings as _s  # local import: avoid cycle
+
+        if (_s.llm_provider or "").lower() == "openai":
+            from finspark.services.llm.openai_client import OpenAIClient  # noqa: PLC0415
+
+            _shared_client = OpenAIClient()
+        else:
+            _shared_client = GeminiClient()
     return _shared_client

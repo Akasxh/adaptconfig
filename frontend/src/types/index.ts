@@ -20,11 +20,6 @@ export interface AdapterEndpoint {
   description: string;
   request_fields: Record<string, unknown>[];
   response_fields: Record<string, unknown>[];
-  // API chaining fields
-  id?: string;
-  depends_on?: string | string[];
-  extract?: Record<string, string>;
-  inject?: Record<string, string>;
 }
 
 export interface AdapterVersion {
@@ -103,8 +98,6 @@ export interface Configuration {
   hooks?: Record<string, unknown>[];
   created_at: string;
   updated_at: string;
-  // API chaining: endpoints with dependency graph
-  endpoints?: AdapterEndpoint[];
   // legacy optional fields kept for backward compat
   adapter_type?: string;
   parameters?: Record<string, unknown>;
@@ -248,22 +241,6 @@ export interface DeprecationInfo {
   migration_guide: Array<{ action: string; description: string }>;
 }
 
-export interface LintFinding {
-  code: string;
-  message: string;
-  severity: "error" | "warning" | "info" | "hint";
-  path: string;
-  range: string;
-}
-
-export interface LintReport {
-  findings: LintFinding[];
-  error_count: number;
-  warning_count: number;
-  info_count: number;
-  spectral_available: boolean;
-}
-
 export interface SearchResult {
   type: string;
   id: string;
@@ -278,25 +255,4 @@ export interface SearchResponse {
   adapters: SearchResult[];
   configurations: SearchResult[];
   simulations: SearchResult[];
-}
-
-// Security inspection types
-export interface SecurityFinding {
-  category: string;
-  severity: "critical" | "high" | "medium" | "low" | "info";
-  title: string;
-  description: string;
-  recommendation: string;
-  location: string;
-  source: "rule_based" | "llm";
-}
-
-export interface SecurityReport {
-  findings: SecurityFinding[];
-  summary: Record<string, number>;
-  overall_risk: "critical" | "high" | "medium" | "low" | "minimal";
-  scanned_at: string;
-  inspector_version: string;
-  llm_augmented: boolean;
-  notes: string[];
 }

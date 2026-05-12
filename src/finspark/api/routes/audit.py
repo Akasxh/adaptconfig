@@ -72,8 +72,6 @@ async def query_audit_logs(
                 resource_type=log.resource_type,
                 resource_id=log.resource_id,
                 details=details,
-                ip_address=log.ip_address,
-                user_agent=log.user_agent,
                 created_at=log.created_at,
             )
         )

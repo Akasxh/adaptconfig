@@ -8,10 +8,6 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 from finspark.schemas.simulations import SimulationStepResult
-from finspark.services.chain_executor import (
-    ChainExecutionError,
-    execute_chain,
-)
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
 
 logger = logging.getLogger(__name__)
@@ -118,11 +114,6 @@ class IntegrationSimulator:
     def __init__(self) -> None:
         self.mock_server = MockAPIServer()
 
-    @staticmethod
-    def _endpoints_use_chaining(endpoints: list[dict[str, Any]]) -> bool:
-        """Return True if any endpoint has an ``id`` set (chain feature)."""
-        return any(ep.get("id") is not None for ep in endpoints)
-
     def run_simulation(
         self,
         config: dict[str, Any],
@@ -137,14 +128,11 @@ class IntegrationSimulator:
         # Step 2: Validate field mappings
         steps.append(self._test_field_mappings(config))
 
-        # Step 3: Test each endpoint (chained or independent)
+        # Step 3: Test each endpoint
         endpoints = config.get("endpoints", [])
-        if self._endpoints_use_chaining(endpoints):
-            steps.extend(self._run_chained_endpoints_sync(endpoints, config))
-        else:
-            for endpoint in endpoints:
-                if endpoint.get("enabled", True):
-                    steps.append(self._test_endpoint(endpoint, config))
+        for endpoint in endpoints:
+            if endpoint.get("enabled", True):
+                steps.append(self._test_endpoint(endpoint, config))
 
         # Step 4: Test authentication
         steps.append(self._test_auth_config(config))
@@ -159,81 +147,6 @@ class IntegrationSimulator:
             # Step 7: Test retry logic
             steps.append(self._test_retry_logic(config))
 
-        return steps
-
-    def _run_chained_endpoints_sync(
-        self,
-        endpoints: list[dict[str, Any]],
-        config: dict[str, Any],
-    ) -> list[SimulationStepResult]:
-        """Execute chained endpoints synchronously via asyncio."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            # Already inside an event loop -- create a task via a new thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                results = pool.submit(
-                    asyncio.run,
-                    self._run_chained_endpoints(endpoints, config),
-                ).result()
-            return results
-        return asyncio.run(self._run_chained_endpoints(endpoints, config))
-
-    async def _run_chained_endpoints(
-        self,
-        endpoints: list[dict[str, Any]],
-        config: dict[str, Any],
-    ) -> list[SimulationStepResult]:
-        """Run endpoints through the chain executor, producing step results."""
-        enabled = [ep for ep in endpoints if ep.get("enabled", True)]
-
-        async def _call_fn(
-            endpoint: dict[str, Any], prepared_request: dict[str, Any]
-        ) -> dict[str, Any]:
-            return self.mock_server.generate_response(
-                endpoint, prepared_request, config=config
-            )
-
-        start = time.monotonic()
-        try:
-            chain_results = await execute_chain(enabled, _call_fn)
-        except ChainExecutionError as exc:
-            return [
-                SimulationStepResult(
-                    step_name="chain_execution",
-                    status="error",
-                    error_message=str(exc),
-                )
-            ]
-        total_ms = int((time.monotonic() - start) * 1000)
-        per_step_ms = max(1, total_ms // max(len(chain_results), 1))
-
-        steps: list[SimulationStepResult] = []
-        for cr in chain_results:
-            ep_id = cr["endpoint_id"]
-            response = cr["response"]
-            has_status = "status" in response
-            steps.append(
-                SimulationStepResult(
-                    step_name=f"chained_endpoint_{ep_id}",
-                    status="passed" if has_status else "failed",
-                    request_payload=cr["request"],
-                    expected_response={"status": "success"},
-                    actual_response={
-                        **response,
-                        "chain_context": {
-                            "extracted": cr["extracted"],
-                            "injected_into_request": cr["request"],
-                        },
-                    },
-                    duration_ms=per_step_ms,
-                    confidence_score=0.9 if has_status else 0.3,
-                )
-            )
         return steps
 
     def run_simulation_stream(
@@ -380,68 +293,84 @@ class IntegrationSimulator:
         several dimensions. Falls back to rule-based run_simulation() on any error.
         """
         system_instruction = (
-            "You are AdaptConfig's senior integration QA reviewer for Indian fintech adapters "
-            "(CIBIL, eKYC, GST, UPI, AA framework, Razorpay, Paytm). You audit integration configs "
-            "for production-readiness. Your analysis must be SPECIFIC and ACTIONABLE — each finding "
-            "should tell the engineer exactly what to change. Generic platitudes are worse than useless. "
-            "Calibrate status: failures must point at real defects; passes must be defensible. "
-            "Output JSON only."
+            "You are an expert integration engineer specializing in Indian fintech APIs. "
+            "Analyze integration configuration objects and return structured JSON validation results. "
+            "Be specific and actionable in your analysis field."
         )
 
-        prompt = f"""Audit this integration config for production-readiness on an Indian fintech lending platform.
+        prompt = f"""Analyze this integration configuration and return a JSON object with structured validation results.
 
-# Config under review
+Configuration to analyze:
 ```json
 {json.dumps(config, indent=2)}
 ```
 
-# Validation dimensions
+Evaluate the following dimensions and return **only** valid JSON matching this exact schema:
 
-Return exactly 7 step results. For each step:
-- `status`: "passed" only if the dimension meets production quality. Otherwise "failed".
-- `confidence_score`: 0.0-1.0, calibrated to severity (1.0 = perfect, 0.5 = serious issue, 0.0 = critical defect).
-- `analysis`: 1-3 sentences naming the SPECIFIC issue or affirming what's correct. Reference field names from the config.
-- `actual_response`: dict with concrete evidence (e.g. `{{"timeout_ms": 5000, "recommended_min": 10000}}`).
-
-## The 7 dimensions
-
-1. **config_structure_validation** — does the config have all required top-level keys (base_url, auth, endpoints, field_mappings)? Are values syntactically valid?
-2. **field_mapping_quality** — are critical Indian fintech fields mapped (pan_number, aadhaar_number, mobile, credit_score, etc. depending on adapter)? Any obvious semantic mismatches? Coverage gaps?
-3. **auth_configuration_adequacy** — is auth.type appropriate for this adapter category? Are required fields present (token_url for oauth, cert for mutual_tls, etc.)? Sensitive creds NOT inline?
-4. **error_handling_robustness** — are there on_error hooks, idempotency keys, dead-letter handling? Are HTTP error codes mapped? Critical for payment/disbursement adapters.
-5. **retry_logic_appropriateness** — retry_count between 1-5? exponential backoff for transient errors? Are 5xx and 429 retryable but 4xx not? CRITICAL: payment endpoints must NOT retry on 4xx (could double-charge).
-6. **endpoint_configuration_validity** — paths look correct? Methods match the operation type? base_url has scheme? Chained endpoints (with `id`/`depends_on`) have valid extract/inject specs?
-7. **security_best_practices** — TLS enforced? Bearer tokens not logged? PII (PAN, Aadhaar, account_number) flagged for masking? Webhook URLs use HTTPS?
-
-# Output schema (return JSON exactly matching this)
 {{
   "steps": [
     {{
       "step_name": "config_structure_validation",
-      "status": "passed",
-      "confidence_score": 1.0,
-      "analysis": "All required top-level keys present and well-formed.",
-      "actual_response": {{"top_level_keys": ["base_url", "auth", "endpoints", "field_mappings", "timeout_ms", "retry_count"]}}
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<detailed explanation of findings>",
+      "actual_response": {{<relevant details as key-value pairs>}}
     }},
-    ... 6 more
+    {{
+      "step_name": "field_mapping_quality",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<are all critical fields mapped? semantic correctness?>",
+      "actual_response": {{<relevant details>}}
+    }},
+    {{
+      "step_name": "auth_configuration_adequacy",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<is auth config appropriate for the adapter type?>",
+      "actual_response": {{<relevant details>}}
+    }},
+    {{
+      "step_name": "error_handling_robustness",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<hooks, on_error handlers, fallback strategies>",
+      "actual_response": {{<relevant details>}}
+    }},
+    {{
+      "step_name": "retry_logic_appropriateness",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<retry count, backoff strategy, status code coverage>",
+      "actual_response": {{<relevant details>}}
+    }},
+    {{
+      "step_name": "endpoint_configuration_validity",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<paths, methods, required/optional params, base_url format>",
+      "actual_response": {{<relevant details>}}
+    }},
+    {{
+      "step_name": "security_best_practices",
+      "status": "passed" | "failed",
+      "confidence_score": <float 0.0–1.0>,
+      "analysis": "<credential handling, token expiry, TLS, sensitive field exposure>",
+      "actual_response": {{<relevant details>}}
+    }}
   ],
-  "overall_assessment": "Plain-English 2-3 sentence summary highlighting the top 2-3 issues, or affirming production readiness."
+  "overall_assessment": "<2-3 sentence summary of config quality and top recommendations>"
 }}
 
-Return ONLY the JSON. No markdown fences. No prose outside the JSON."""
+Return only the JSON object. No markdown, no prose outside the JSON."""
 
         start = time.monotonic()
         try:
-            from finspark.core.config import settings as _settings  # noqa: PLC0415
-            extra: dict[str, Any] = {}
-            if _settings.llm_provider == "openrouter" and _settings.llm_model_reasoning:
-                extra["model"] = _settings.llm_model_reasoning
             data = await client.generate_json(
                 prompt,
                 system_instruction=system_instruction,
                 temperature=0.1,
                 max_tokens=4096,
-                **extra,
             )
         except (GeminiAPIError, Exception) as exc:
             logger.warning(

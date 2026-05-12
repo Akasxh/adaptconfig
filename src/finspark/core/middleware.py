@@ -67,13 +67,6 @@ class TenantMiddleware(BaseHTTPMiddleware):
             token = auth_header[len("Bearer "):]
             try:
                 payload = decode_jwt_token(token)
-                # Reject refresh tokens used as access tokens
-                token_type = payload.get("type", "")
-                if token_type == "refresh":
-                    return JSONResponse(
-                        status_code=401,
-                        content={"detail": "Refresh tokens cannot be used for API access"},
-                    )
                 tenant_id = payload.get("tenant_id", DEFAULT_TENANT_ID)
                 tenant_name = payload.get("tenant_name", DEFAULT_TENANT_NAME)
                 role = payload.get("role", "viewer")
@@ -88,12 +81,12 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 # In debug mode, fall through to header-based auth
                 tenant_id = request.headers.get("X-Tenant-ID", DEFAULT_TENANT_ID)
                 tenant_name = request.headers.get("X-Tenant-Name", DEFAULT_TENANT_NAME)
-                role = request.headers.get("X-Tenant-Role", "viewer")
+                role = request.headers.get("X-Tenant-Role", "admin")
         elif settings.debug:
             # Debug mode without token: use header-based auth
             tenant_id = request.headers.get("X-Tenant-ID", DEFAULT_TENANT_ID)
             tenant_name = request.headers.get("X-Tenant-Name", DEFAULT_TENANT_NAME)
-            role = request.headers.get("X-Tenant-Role", "viewer")
+            role = request.headers.get("X-Tenant-Role", "admin")
         else:
             # Production mode without token: reject
             return JSONResponse(
@@ -131,35 +124,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         response.headers["X-Response-Time"] = f"{duration}ms"
         return response
-
-
-class RequestBodySizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests with a Content-Length exceeding a configured limit.
-
-    Primarily targets file upload endpoints. The limit is read from
-    ``settings.max_upload_size_mb`` and defaults to 50 MB.
-    """
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                # Coerce both sides to int. Tests sometimes monkeypatch settings
-                # with a MagicMock — fall back to the 50 MB default in that case.
-                max_mb = int(settings.max_upload_size_mb)
-                received = int(content_length)
-            except (TypeError, ValueError):
-                max_mb = 50
-                try:
-                    received = int(content_length)
-                except (TypeError, ValueError):
-                    return await call_next(request)
-            if received > max_mb * 1024 * 1024:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": f"Request body too large. Maximum size is {max_mb} MB."},
-                )
-        return await call_next(request)
 
 
 # Pattern: /api/v1/adapters/{adapter_id}/versions/{version}/...

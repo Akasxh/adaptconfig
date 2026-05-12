@@ -8,7 +8,7 @@ import os
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,43 +17,6 @@ from finspark.core.security import create_jwt_token, decode_jwt_token
 from finspark.models.user import User
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-
-
-# ── Per-IP rate limiter for auth endpoints ────────────────────────────────────
-
-import time as _time
-from collections import OrderedDict as _OrderedDict
-
-_AUTH_RATE_LIMIT_MAX = 10  # max requests per window
-_AUTH_RATE_LIMIT_WINDOW = 60  # seconds
-_AUTH_RATE_LIMIT_MAX_IPS = 10_000
-_auth_requests: _OrderedDict[str, list[float]] = _OrderedDict()
-
-
-def _check_auth_rate_limit(request: Request) -> None:
-    """Raise 429 if the client IP exceeds the auth rate limit."""
-    client_ip = request.client.host if request.client else "unknown"
-    now = _time.monotonic()
-    cutoff = now - _AUTH_RATE_LIMIT_WINDOW
-
-    if client_ip in _auth_requests:
-        _auth_requests.move_to_end(client_ip)
-    else:
-        if len(_auth_requests) >= _AUTH_RATE_LIMIT_MAX_IPS:
-            _auth_requests.popitem(last=False)
-        _auth_requests[client_ip] = []
-
-    timestamps = _auth_requests[client_ip]
-    _auth_requests[client_ip] = [t for t in timestamps if t > cutoff]
-    timestamps = _auth_requests[client_ip]
-
-    if len(timestamps) >= _AUTH_RATE_LIMIT_MAX:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many authentication attempts. Please try again later.",
-        )
-    timestamps.append(now)
-
 
 # ── Password hashing (PBKDF2-HMAC-SHA256 via stdlib) ─────────────────────────
 
@@ -82,14 +45,14 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 class RegisterRequest(BaseModel):
-    email: str = Field(..., min_length=5, max_length=254)
-    password: str = Field(..., min_length=8, max_length=128)
-    name: str = Field(..., min_length=1, max_length=100)
+    email: str
+    password: str
+    name: str
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(..., min_length=5, max_length=254)
-    password: str = Field(..., min_length=1, max_length=128)
+    email: str
+    password: str
 
 
 class RefreshRequest(BaseModel):
@@ -140,9 +103,8 @@ def _make_tokens(user: User) -> tuple[str, str]:
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-async def register(body: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)) -> UserOut:
+async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> UserOut:
     """Register a new user. Returns user info (no token) so the client can login."""
-    _check_auth_rate_limit(request)
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -166,9 +128,8 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)) -> LoginResponse:
+async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> LoginResponse:
     """Authenticate with email + password. Returns access + refresh tokens."""
-    _check_auth_rate_limit(request)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if not user or not _verify_password(body.password, user.password_hash):
@@ -233,9 +194,6 @@ async def me(request: Request, db: AsyncSession = Depends(get_db)) -> UserOut:
         payload = decode_jwt_token(token)
     except pyjwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-    if payload.get("type") == "refresh":
-        raise HTTPException(status_code=401, detail="Refresh tokens cannot be used for API access")
 
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == user_id))

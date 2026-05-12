@@ -173,50 +173,6 @@ Four API specs with increasing complexity for testing:
 | `test_fixtures/cibil_bureau_api_v2.yaml` | ⭐⭐⭐ Complex | 4 | 28 | OAuth2 + API Key |
 | `test_fixtures/03_account_aggregator_complex.yaml` | ⭐⭐⭐⭐ Advanced | 4 | 20+ | Mutual TLS + JWT |
 
-## Using AdaptConfig as an MCP Server
-
-AdaptConfig exposes its core capabilities via the [Model Context Protocol](https://modelcontextprotocol.io), allowing LLM clients (Claude Desktop, IDE agents, etc.) to parse API docs, generate configs, run simulations, and browse adapters directly.
-
-### Install
-
-```bash
-uv pip install -e .   # installs the `adaptconfig-mcp` console script
-```
-
-### Run (stdio)
-
-```bash
-adaptconfig-mcp       # starts the MCP server on stdio
-```
-
-### Wire into Claude Desktop
-
-Add to `~/.config/claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "adaptconfig": {
-      "command": "adaptconfig-mcp",
-      "env": {
-        "FINSPARK_OPENAI_API_KEY": "your-key-here"
-      }
-    }
-  }
-}
-```
-
-### Available MCP Tools
-
-| Tool | Description | Requires LLM |
-|------|-------------|:---:|
-| `parse_api_document` | Parse API docs (BRD/SOW/OpenAPI) into structured specs | Yes (fallback to regex) |
-| `generate_integration_config` | Generate full integration config for an adapter | Yes |
-| `simulate_config` | Run simulation against a config (structure, fields, auth, endpoints) | No |
-| `search_adapters` | Search adapter catalog by keyword | No |
-| `list_adapters` | List all available adapters | No |
-| `get_capabilities` | Server metadata and tool inventory | No |
-
 ## Project Stats
 
 | Metric | Value |

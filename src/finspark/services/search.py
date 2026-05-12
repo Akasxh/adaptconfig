@@ -348,73 +348,26 @@ class IntegrationSearch:
         pipeline. Falls back to rule-based ``search()`` on any error.
         """
         system_instruction = (
-            "You are AdaptConfig's search query parser. You convert natural-language queries "
-            "from Indian fintech engineers into structured search filters. Infer aggressively "
-            "from domain context (CIBIL → credit bureau, Razorpay → payment, mTLS → mutual_tls) "
-            "but never invent values not implied by the query. Output JSON only."
+            "You are a search query parser for an Indian fintech integration platform. "
+            "Parse the user's search query into structured filters. "
+            "Available categories: bureau, kyc, gst, payment, fraud, notification, open_banking. "
+            "Available statuses: draft, configured, validating, testing, active, deprecated, rollback. "
+            "Available auth types: api_key, oauth2, bearer, basic, jwt, hmac. "
+            "Return only valid JSON with no extra commentary."
         )
-        prompt_template = """Parse this query into structured search filters.
-
-Query: "{query}"
-
-# Filter values
-
-## Categories (Indian fintech domain): bureau | kyc | gst | payment | fraud | notification | open_banking
-- "credit bureau" / "CIBIL" / "Equifax" / "credit score" → bureau
-- "eKYC" / "Aadhaar" / "identity verification" / "video KYC" → kyc
-- "GST" / "GSTIN" / "tax filing" → gst
-- "payment gateway" / "Razorpay" / "Paytm" / "UPI" / "PhonePe" → payment
-- "fraud" / "risk scoring" / "AML" → fraud
-- "SMS" / "email" / "WhatsApp" / "alerts" / "notification" → notification
-- "account aggregator" / "AA framework" / "FIP" / "FIU" / "consent" → open_banking
-
-## Config statuses: draft | configured | validating | testing | active | deprecated | rollback
-- "in prod" / "live" / "deployed" → active
-- "rolled back" / "broken" → rollback
-- "retired" / "old" → deprecated
-- "wip" / "draft" / "new" → draft
-
-## Auth types: api_key | oauth2 | bearer | basic | jwt | hmac | mutual_tls
-- "oauth" / "oauth 2.0" → oauth2
-- "api key" / "apikey" → api_key
-- "certificate" / "mTLS" / "client cert" → mutual_tls
-
-## Simulation statuses: passed | failed | error | pending | running
-- "successful" / "green tests" → passed
-- "broken" / "failing" / "red" → failed
-
-## Intent
-- "search_adapters" — user wants adapters (catalog)
-- "search_configs" — user wants their configurations
-- "search_simulations" — user wants test runs
-- "search_all" — unclear, search everything
-
-# Examples
-
-Q: "CIBIL configs in production"
-A: {{"tokens": ["cibil"], "category": "bureau", "status": "active", "auth_type": null, "sim_status": null, "intent": "search_configs"}}
-
-Q: "failed payment simulations"
-A: {{"tokens": [], "category": "payment", "status": null, "auth_type": null, "sim_status": "failed", "intent": "search_simulations"}}
-
-Q: "oauth adapters"
-A: {{"tokens": [], "category": null, "status": null, "auth_type": "oauth2", "sim_status": null, "intent": "search_adapters"}}
-
-Q: "razorpay"
-A: {{"tokens": ["razorpay"], "category": "payment", "status": null, "auth_type": null, "sim_status": null, "intent": "search_all"}}
-
-Q: "show me everything"
-A: {{"tokens": [], "category": null, "status": null, "auth_type": null, "sim_status": null, "intent": "search_all"}}
-
-# Output (return ONLY this JSON, no extra fields, no markdown)
-{{
-  "tokens": ["..."],
-  "category": "bureau" or null,
-  "status": "active" or null,
-  "auth_type": "oauth2" or null,
-  "sim_status": "passed" or null,
-  "intent": "search_adapters"
-}}"""
+        prompt_template = (
+            'Parse this search query into structured filters.\n\n'
+            'Query: "{query}"\n\n'
+            "Return JSON:\n"
+            "{{\n"
+            '  "tokens": ["search", "terms"],\n'
+            '  "category": "bureau" or null,\n'
+            '  "status": "active" or null,\n'
+            '  "auth_type": "oauth2" or null,\n'
+            '  "sim_status": "passed" or null,\n'
+            '  "intent": "search_adapters|search_configs|search_simulations|search_all"\n'
+            "}}"
+        )
 
         try:
             prompt = prompt_template.format(query=query)

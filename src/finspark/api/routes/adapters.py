@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.api.dependencies import get_adapter_registry, get_deprecation_tracker, get_tenant_context, require_role
+from finspark.api.dependencies import get_adapter_registry, get_deprecation_tracker, get_tenant_context
 from finspark.core.database import get_db
 from finspark.core.json_utils import safe_json_loads
 from finspark.models.document import Document
@@ -56,16 +56,11 @@ def compute_adapter_match_score(
 @router.get("/", response_model=APIResponse[AdapterListResponse])
 async def list_adapters(
     category: str | None = None,
-    limit: int = Query(50, ge=1, le=200, description="Maximum number of adapters to return"),
-    offset: int = Query(0, ge=0, description="Number of adapters to skip"),
     registry: AdapterRegistry = Depends(get_adapter_registry),
 ) -> APIResponse[AdapterListResponse]:
     """List all available integration adapters."""
-    all_adapters = await registry.list_adapters(category=category)
+    adapters = await registry.list_adapters(category=category)
     categories = await registry.get_categories()
-
-    # Apply pagination
-    adapters = all_adapters[offset : offset + limit]
 
     adapter_responses = []
     for a in adapters:
@@ -196,7 +191,7 @@ async def create_adapter_from_document(
     name: str = Query(...),
     category: str = Query(default="custom"),
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = require_role("admin", "editor"),
+    tenant: TenantContext = Depends(get_tenant_context),
     registry: AdapterRegistry = Depends(get_adapter_registry),
 ) -> APIResponse[AdapterResponse]:
     """Create a new adapter and version from a parsed document."""
