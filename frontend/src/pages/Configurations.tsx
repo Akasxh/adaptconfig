@@ -346,10 +346,22 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 
   const saveMutation = useMutation({
     mutationFn: (fms: FieldMapping[]) => configurationsApi.update(cfg.id, { field_mappings: fms }),
-    onSuccess: () => {
+    onSuccess: (resp) => {
       queryClient.invalidateQueries({ queryKey: ["configurations"] });
+      const saved = resp?.data?.field_mappings;
+      const errs = resp?.errors ?? [];
+      // Snap UI to the server's annotation so each row's red message
+      // reflects the canonical parse error. The mapping itself stays
+      // editable — invalid expressions are persisted, not rejected.
+      if (saved && saved.length === mappings.length) {
+        setMappings(saved.map((fm) => ({ ...fm })));
+      }
       setIsDirty(false);
-      toast("Mappings saved.", "success");
+      if (errs.length > 0) {
+        toast(`Saved with ${errs.length} invalid expression${errs.length === 1 ? "" : "s"}.`, "error");
+      } else {
+        toast("Mappings saved.", "success");
+      }
     },
     onError: () => { toast("Failed to save mappings.", "error"); },
   });
@@ -361,6 +373,17 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 
   const updateTransform = (idx: number, value: string) => {
     setMappings((prev) => { const next = [...prev]; next[idx] = { ...next[idx], transformation: value === "none" ? undefined : value }; return next; });
+    setIsDirty(true);
+  };
+
+  const updateExpr = (idx: number, value: string) => {
+    setMappings((prev) => {
+      const next = [...prev];
+      // Clear stale server-side error as soon as the user edits — the next
+      // PATCH response will re-populate it with the canonical verdict.
+      next[idx] = { ...next[idx], transformation_expr: value, transformation_expr_error: null };
+      return next;
+    });
     setIsDirty(true);
   };
 
@@ -391,7 +414,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
         <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-bg-base)" }}>
-              {["Source", "→", "Target", "Confidence", "Transform"].map((h) => (
+              {["Source", "→", "Target", "Confidence", "Transform", "Custom expr"].map((h) => (
                 <th key={h} style={{ padding: "8px 12px", textAlign: h === "→" ? "center" : "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)" }}>
                   {h}
                 </th>
@@ -399,51 +422,83 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
             </tr>
           </thead>
           <tbody>
-            {mappings.map((fm, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: field mappings have no stable id
-              <tr key={i} style={{ borderBottom: "1px solid var(--color-border)" }}>
-                <td style={{ padding: "8px 12px" }}>
-                  <span className="mono" style={{ color: "var(--color-text-primary)", fontSize: 12 }}>{fm.source_field}</span>
-                </td>
-                <td style={{ padding: "8px 12px", textAlign: "center", color: "var(--color-text-muted)" }}>
-                  <ChevronRight style={{ width: 12, height: 12, margin: "0 auto" }} />
-                </td>
-                <td style={{ padding: "8px 12px", minWidth: 160 }}>
-                  <input
-                    type="text"
-                    value={fm.target_field}
-                    placeholder="target field..."
-                    onChange={(e) => updateTarget(i, e.target.value)}
-                    style={{
-                      width: "100%", borderRadius: 4, border: "1px solid var(--color-border-strong)",
-                      background: "var(--color-bg-raised)", padding: "4px 8px",
-                      fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
-                      outline: "none", boxSizing: "border-box",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
-                  />
-                </td>
-                <td style={{ padding: "8px 12px", minWidth: 120 }}>
-                  <ConfidenceBar value={fm.confidence} hasTarget={!!fm.target_field} />
-                </td>
-                <td style={{ padding: "8px 12px" }}>
-                  <select
-                    value={fm.transformation ?? "none"}
-                    onChange={(e) => updateTransform(i, e.target.value)}
-                    style={{
-                      borderRadius: 4, border: "1px solid var(--color-border-strong)",
-                      background: "var(--color-bg-raised)", padding: "4px 8px",
-                      fontSize: 12, color: "var(--color-text-primary)", outline: "none",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
-                  >
-                    {TRANSFORM_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                </td>
-              </tr>
-            ))}
+            {mappings.map((fm, i) => {
+              const exprError = fm.transformation_expr_error ?? null;
+              const exprValue = fm.transformation_expr ?? "";
+              const exprBorder = exprError ? "var(--color-error-text)" : "var(--color-border-strong)";
+              return (
+                // biome-ignore lint/suspicious/noArrayIndexKey: field mappings have no stable id
+                <tr key={i} style={{ borderBottom: "1px solid var(--color-border)" }}>
+                  <td style={{ padding: "8px 12px" }}>
+                    <span className="mono" style={{ color: "var(--color-text-primary)", fontSize: 12 }}>{fm.source_field}</span>
+                  </td>
+                  <td style={{ padding: "8px 12px", textAlign: "center", color: "var(--color-text-muted)" }}>
+                    <ChevronRight style={{ width: 12, height: 12, margin: "0 auto" }} />
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 160 }}>
+                    <input
+                      type="text"
+                      value={fm.target_field}
+                      placeholder="target field..."
+                      onChange={(e) => updateTarget(i, e.target.value)}
+                      style={{
+                        width: "100%", borderRadius: 4, border: "1px solid var(--color-border-strong)",
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
+                        outline: "none", boxSizing: "border-box",
+                      }}
+                      onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
+                      onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                    />
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 120 }}>
+                    <ConfidenceBar value={fm.confidence} hasTarget={!!fm.target_field} />
+                  </td>
+                  <td style={{ padding: "8px 12px" }}>
+                    <select
+                      value={fm.transformation ?? "none"}
+                      onChange={(e) => updateTransform(i, e.target.value)}
+                      style={{
+                        borderRadius: 4, border: "1px solid var(--color-border-strong)",
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontSize: 12, color: "var(--color-text-primary)", outline: "none",
+                      }}
+                      onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
+                      onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                    >
+                      {TRANSFORM_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 220 }}>
+                    <input
+                      type="text"
+                      value={exprValue}
+                      placeholder='int(x) | clamp(0, 1_000_000)'
+                      aria-invalid={exprError ? true : undefined}
+                      title={exprError ?? "Optional safe DSL: int(x), float(x), strip(\"$\"), parse_date(\"DD/MM/YYYY\"), upper(x), lower(x), clamp(min, max), chained with |"}
+                      onChange={(e) => updateExpr(i, e.target.value)}
+                      style={{
+                        width: "100%", borderRadius: 4, border: `1px solid ${exprBorder}`,
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
+                        outline: "none", boxSizing: "border-box",
+                      }}
+                      onFocus={(e) => {
+                        if (!exprError) e.currentTarget.style.borderColor = "var(--color-brand-light)";
+                      }}
+                      onBlur={(e) => {
+                        e.currentTarget.style.borderColor = exprError ? "var(--color-error-text)" : "var(--color-border-strong)";
+                      }}
+                    />
+                    {exprError && (
+                      <p style={{ fontSize: 11, color: "var(--color-error-text)", marginTop: 4, lineHeight: 1.3 }}>
+                        {exprError}
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

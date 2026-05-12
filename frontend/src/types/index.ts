@@ -81,6 +81,17 @@ export interface FieldMapping {
   source_field: string;
   target_field: string;
   transformation?: string;
+  // Optional safe-DSL expression evaluated at runtime by the backend
+  // ``services/transformation`` engine. Examples: ``int(x)``,
+  // ``strip("$") | int(x)``, ``parse_date("DD/MM/YYYY")``,
+  // ``int(x) | clamp(0, 1_000_000)``. When set and parseable, takes
+  // precedence over ``transformation``; when unparseable, the simulator
+  // falls back to ``transformation``.
+  transformation_expr?: string | null;
+  // Server-populated parse error for ``transformation_expr``. Never sent
+  // back to the server on PATCH (it is stripped). Drives inline red
+  // validation feedback in the mappings table.
+  transformation_expr_error?: string | null;
   confidence: number;
   is_confirmed: boolean;
 }

@@ -57,6 +57,7 @@ from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionE
 from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
+from finspark.services.transformation import validate_expression
 from finspark.services.webhook_delivery import deliver_event
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,42 @@ CONFIG_TEMPLATES: list[ConfigTemplateResponse] = [
 async def list_templates() -> APIResponse[list[ConfigTemplateResponse]]:
     """Return pre-built configuration templates for common integration patterns."""
     return APIResponse(data=CONFIG_TEMPLATES)
+
+
+def _annotate_mapping_errors(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Populate per-row ``transformation_expr_error`` for response serialization.
+
+    Field mappings persisted in the DB never carry the error column — it is
+    a derived response-time field so the UI can render inline red feedback
+    without a separate validation round-trip. Returns a new list; never
+    mutates caller-owned dicts.
+    """
+    annotated: list[dict[str, Any]] = []
+    for raw in mappings:
+        item = dict(raw)
+        expr = item.get("transformation_expr")
+        if expr and expr.strip():
+            valid, error = validate_expression(expr)
+            item["transformation_expr_error"] = None if valid else error
+        else:
+            # Strip any stale error so it never round-trips on a cleared expr.
+            item.pop("transformation_expr_error", None)
+            item["transformation_expr_error"] = None
+        annotated.append(item)
+    return annotated
+
+
+def _collect_expr_errors(mappings: list[dict[str, Any]]) -> list[str]:
+    """Collect ``field_mappings[i].transformation_expr`` errors as flat strings."""
+    errors: list[str] = []
+    for idx, m in enumerate(mappings):
+        expr = m.get("transformation_expr")
+        if not expr or not expr.strip():
+            continue
+        valid, error = validate_expression(expr)
+        if not valid and error:
+            errors.append(f"field_mappings[{idx}].transformation_expr: {error}")
+    return errors
 
 
 def _validate_config(full_config: dict[str, Any]) -> ConfigValidationResult:
@@ -695,7 +732,7 @@ async def generate_configuration(
             document_id=configuration.document_id,
             status=configuration.status,
             version=configuration.version,
-            field_mappings=[FieldMapping(**m) for m in field_mappings],
+            field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
             created_at=configuration.created_at,
             updated_at=configuration.updated_at,
         ),
@@ -730,7 +767,7 @@ async def get_configuration(
             document_id=config.document_id,
             status=config.status,
             version=config.version,
-            field_mappings=[FieldMapping(**m) for m in field_mappings],
+            field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
             created_at=config.created_at,
             updated_at=config.updated_at,
         ),
@@ -747,7 +784,7 @@ def _serialize_config(config: Configuration) -> ConfigurationResponse:
         document_id=config.document_id,
         status=config.status,
         version=config.version,
-        field_mappings=[FieldMapping(**m) for m in field_mappings],
+        field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -771,10 +808,19 @@ async def update_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
+    expr_errors: list[str] = []
     if body.name is not None:
         config.name = body.name
     if body.field_mappings is not None:
-        config.field_mappings = json.dumps([fm.model_dump() for fm in body.field_mappings])
+        # Strip the response-only error column before persisting and validate
+        # transformation_expr fields. Invalid expressions are still persisted
+        # (per persona: "mapping stays editable") so the user can fix them in
+        # place — the simulator falls back to the enum transformation, and we
+        # surface the parse errors in the response so the UI can render an
+        # inline red message.
+        new_mappings = [fm.model_dump(exclude={"transformation_expr_error"}) for fm in body.field_mappings]
+        expr_errors = _collect_expr_errors(new_mappings)
+        config.field_mappings = json.dumps(new_mappings)
     if body.notes is not None:
         config.notes = body.notes
 
@@ -789,7 +835,16 @@ async def update_configuration(
         details={"updated_fields": [k for k, v in body.model_dump().items() if v is not None]},
     )
 
-    return APIResponse(success=True, data=_serialize_config(config), message="Configuration updated")
+    message = "Configuration updated"
+    if expr_errors:
+        message = f"Configuration updated with {len(expr_errors)} invalid expression(s)"
+
+    return APIResponse(
+        success=True,
+        data=_serialize_config(config),
+        message=message,
+        errors=expr_errors,
+    )
 
 
 @router.post("/{config_id}/validate", response_model=APIResponse[ConfigValidationResult])
@@ -958,7 +1013,12 @@ async def list_configurations(
                 document_id=c.document_id,
                 status=c.status,
                 version=c.version,
-                field_mappings=json.loads(c.field_mappings) if c.field_mappings else [],
+                field_mappings=[
+                    FieldMapping(**m)
+                    for m in _annotate_mapping_errors(
+                        json.loads(c.field_mappings) if c.field_mappings else []
+                    )
+                ],
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )

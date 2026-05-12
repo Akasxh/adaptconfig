@@ -14,6 +14,16 @@ class FieldMapping(BaseModel):
     source_field: str
     target_field: str
     transformation: str | None = None  # e.g., "uppercase", "date_format", "split"
+    # Free-text safe-DSL expression evaluated by services/transformation.
+    # Examples: 'int(x)', 'strip("$") | int(x)', 'parse_date("DD/MM/YYYY")',
+    # 'int(x) | clamp(0, 1_000_000)'. When blank, the enum `transformation`
+    # value is used. When non-blank but invalid, the simulator falls back to
+    # the enum value and `transformation_expr_error` is populated for the UI.
+    transformation_expr: str | None = None
+    # Validation feedback for `transformation_expr`. Never persisted —
+    # populated at response time so the UI can render an inline red message
+    # without a separate validation round-trip.
+    transformation_expr_error: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     is_confirmed: bool = False
 
