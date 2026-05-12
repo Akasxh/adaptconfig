@@ -512,6 +512,12 @@ export default function Documents() {
   const { data, error, isLoading } = useQuery({
     queryKey: ["documents"],
     queryFn: () => documentsApi.list(),
+    // Poll every 3s while any document is still parsing (LLM runs in background)
+    refetchInterval: (query) => {
+      const docs = query.state.data?.data;
+      if (docs && docs.some((d: Document) => d.status === "parsing")) return 3000;
+      return false;
+    },
   });
 
   const uploadMutation = useMutation({

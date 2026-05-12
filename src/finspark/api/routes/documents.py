@@ -92,7 +92,7 @@ async def upload_document(
 
     await asyncio.to_thread(_write_file, file_path, file_bytes)
 
-    # Create document record
+    # Create document record with "parsing" status — returned immediately
     doc = Document(
         tenant_id=tenant.tenant_id,
         filename=safe_name,
@@ -104,77 +104,131 @@ async def upload_document(
     db.add(doc)
     await db.flush()
 
-    # Parse document — try LLM first for all doc types, fallback to regex
-    try:
-        use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    doc_id = doc.id
+    tenant_id = tenant.tenant_id
+    tenant_name = tenant.tenant_name
 
-        file_ext = suffix.lstrip(".")
-        if file_ext in ("yaml", "yml", "json"):
-            raw_text = file_bytes.decode("utf-8", errors="replace")
-        else:
-            raw_text = ""
+    # Quick regex parse is fast — do it inline so simple specs return "parsed"
+    file_ext = suffix.lstrip(".")
+    raw_text = file_bytes.decode("utf-8", errors="replace") if file_ext in ("yaml", "yml", "json") else ""
+    use_llm = settings.ai_enabled and (
+        bool(settings.openai_api_key) or bool(settings.openrouter_api_key) or bool(settings.gemini_api_key)
+    )
 
-        result = None
-        if use_llm:
+    if use_llm:
+        # LLM parsing is slow (30-90s) — run in background, return immediately
+        regex_result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
+
+        # Capture values the background task needs (avoid closing over request-scoped deps)
+        _bg_raw = raw_text or regex_result.summary
+        _bg_file_ext = file_ext
+        _bg_safe_name = safe_name
+        _bg_doc_type = doc_type
+        _bg_doc_id = doc_id
+        _bg_tenant_id = tenant_id
+        _bg_regex_result = regex_result
+        _bg_parser = parser
+
+        async def _parse_in_background() -> None:
+            from finspark.core.database import async_session_factory
+
             try:
                 from finspark.services.llm.client import get_llm_client
 
                 llm_client = get_llm_client()
-                # Get raw text for binary docs via regex parser first
-                if not raw_text:
-                    regex_result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
-                    raw_text = regex_result.summary
-
-                result = await parser.parse_with_llm(raw_text, safe_name, llm_client)
-                logger.info("document_parsed_via_llm filename=%s", safe_name)
+                result = await _bg_parser.parse_with_llm(_bg_raw, _bg_safe_name, llm_client)
+                logger.info("document_parsed_via_llm filename=%s", _bg_safe_name)
             except Exception:
-                logger.warning("LLM parsing failed for %s, falling back to regex", safe_name, exc_info=True)
-                result = None
+                logger.warning(
+                    "LLM parsing failed for %s, using regex result",
+                    _bg_safe_name,
+                    exc_info=True,
+                )
+                result = _bg_regex_result
 
-        if result is None:
-            result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
+            # Run Spectral linting on API specs
+            if _bg_raw and _bg_file_ext in ("yaml", "yml", "json"):
+                try:
+                    lint_report = await lint_openapi_spec(_bg_raw, format=_bg_file_ext)
+                    result.lint_report = lint_report
+                except Exception:
+                    logger.warning("Spectral linting failed for %s", _bg_safe_name, exc_info=True)
 
-        # Run Spectral linting on API specs (yaml/yml/json with openapi/swagger key)
-        if raw_text and suffix.lstrip(".") in ("yaml", "yml", "json"):
             try:
-                lint_report = await lint_openapi_spec(raw_text, format=suffix.lstrip("."))
-                result.lint_report = lint_report
+                async with async_session_factory() as bg_db:
+                    stmt = select(Document).where(Document.id == _bg_doc_id)
+                    row = (await bg_db.execute(stmt)).scalar_one_or_none()
+                    if row:
+                        row.parsed_result = result.model_dump_json()
+                        row.raw_text = result.summary[:5000]
+                        row.status = "parsed"
+                        await bg_db.commit()
+                        logger.info("background_parse_complete doc_id=%s", _bg_doc_id)
+                    else:
+                        logger.error("background_parse_doc_not_found doc_id=%s", _bg_doc_id)
             except Exception:
-                logger.warning("Spectral linting failed for %s, continuing without lint", safe_name, exc_info=True)
+                logger.error("background_parse_db_update_failed doc_id=%s", _bg_doc_id, exc_info=True)
 
-        doc.parsed_result = result.model_dump_json()
-        doc.raw_text = result.summary[:5000]
-        doc.status = "parsed"
-    except Exception as e:
-        doc.status = "failed"
-        doc.error_message = str(e)
+            try:
+                webhook_data = {
+                    "tenant_id": _bg_tenant_id,
+                    "document_id": _bg_doc_id,
+                    "filename": _bg_safe_name,
+                    "doc_type": _bg_doc_type,
+                }
+                await events.emit(events.DOCUMENT_PARSED, webhook_data)
+                await deliver_event(_bg_tenant_id, events.DOCUMENT_PARSED, webhook_data)
+            except Exception:
+                logger.warning("background_parse_webhook_failed doc_id=%s", _bg_doc_id, exc_info=True)
 
-    await db.flush()
+        # Fire-and-forget via asyncio.create_task (runs concurrently, not blocked by response)
+        asyncio.create_task(_parse_in_background())
+
+        # Store regex result as interim so the doc is at least viewable while LLM runs
+        doc.parsed_result = regex_result.model_dump_json()
+        doc.raw_text = regex_result.summary[:5000]
+        await db.flush()
+    else:
+        # No LLM — regex parse is fast, do it inline
+        try:
+            result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
+            if raw_text and file_ext in ("yaml", "yml", "json"):
+                try:
+                    lint_report = await lint_openapi_spec(raw_text, format=file_ext)
+                    result.lint_report = lint_report
+                except Exception:
+                    logger.warning("Spectral linting failed for %s", safe_name, exc_info=True)
+            doc.parsed_result = result.model_dump_json()
+            doc.raw_text = result.summary[:5000]
+            doc.status = "parsed"
+        except Exception as e:
+            doc.status = "failed"
+            doc.error_message = str(e)
+        await db.flush()
+
+    # Commit now so the document is visible immediately for polling
+    await db.commit()
 
     webhook_data = {
-        "tenant_id": tenant.tenant_id,
-        "document_id": doc.id,
+        "tenant_id": tenant_id,
+        "document_id": doc_id,
         "filename": doc.filename,
         "doc_type": doc_type,
     }
-    # Always fire document.uploaded; fire document.parsed only on success
     await events.emit(events.DOCUMENT_UPLOADED, webhook_data)
-    background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_UPLOADED, webhook_data)
-    if doc.status == "parsed":
-        await events.emit(events.DOCUMENT_PARSED, webhook_data)
-        background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_PARSED, webhook_data)
+    background_tasks.add_task(deliver_event, tenant_id, events.DOCUMENT_UPLOADED, webhook_data)
 
     await audit.log(
-        tenant_id=tenant.tenant_id,
-        actor=tenant.tenant_name,
+        tenant_id=tenant_id,
+        actor=tenant_name,
         action="upload_document",
         resource_type="document",
-        resource_id=doc.id,
+        resource_id=doc_id,
         details={"filename": safe_name, "doc_type": doc_type, "status": doc.status},
     )
 
     return APIResponse(
-        success=doc.status == "parsed",
+        success=True,
         data=DocumentUploadResponse(
             id=doc.id,
             filename=doc.filename,
@@ -183,9 +237,9 @@ async def upload_document(
             status=doc.status,
             created_at=doc.created_at,
         ),
-        message=f"Document {doc.status}"
-        if doc.status == "parsed"
-        else doc.error_message or "Parsing failed",
+        message="Document uploaded, parsing in progress"
+        if doc.status == "parsing"
+        else f"Document {doc.status}",
     )
 
 

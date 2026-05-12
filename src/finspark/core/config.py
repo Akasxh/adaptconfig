@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3-flash-preview"
     ai_enabled: bool = False
 
+    # Admin user seeding
+    admin_password: str = ""
+
     model_config = {"env_prefix": "FINSPARK_", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")

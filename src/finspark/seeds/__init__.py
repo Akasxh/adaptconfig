@@ -67,7 +67,9 @@ async def seed_admin_user() -> None:
     from finspark.core.config import settings
     from finspark.models.user import User
 
-    admin_password = os.environ.get("FINSPARK_ADMIN_PASSWORD", "")
+    # Read from settings first (which loads .env via pydantic-settings),
+    # then fall back to os.environ for backward compatibility.
+    admin_password = getattr(settings, "admin_password", "") or os.environ.get("FINSPARK_ADMIN_PASSWORD", "")
 
     if not admin_password:
         if not settings.debug:

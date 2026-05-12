@@ -166,6 +166,7 @@ export const documentsApi = {
     return api
       .post<APIResponse<Document>>(`/api/v1/documents/upload?doc_type=${docType}`, form, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 120_000, // Upload + initial processing can take longer
       })
       .then((r) => r.data);
   },
