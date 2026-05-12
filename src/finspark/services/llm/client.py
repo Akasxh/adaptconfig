@@ -18,7 +18,12 @@ _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 class GeminiAPIError(Exception):
-    """Raised when the Gemini API returns an error or unexpected response."""
+    """Raised when the LLM API (Gemini or OpenAI) returns an error or unexpected response."""
+
+
+# Provider-neutral alias: code added after the multi-provider switch imports
+# this name; keep both working so we don't have to rename every call site.
+LLMAPIError = GeminiAPIError
 
 
 class GeminiClient:
