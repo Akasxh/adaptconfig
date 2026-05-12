@@ -187,6 +187,45 @@ Middleware**.
 
 ---
 
+## 5. Universal API + Skill Author (Issue #116)
+
+**Mission.** Make every user-facing feature reachable via HTTP and ship a
+drop-in `adaptconfig.skill.md` so any Claude Code / Claude Agent SDK consumer
+can operate the app exactly like a human.
+
+**Scope (MVP).**
+- Audit `frontend/src/pages/` → every interactive element traces to a backend
+  endpoint. Fill gaps in `api/routes/*.py`.
+- Composite endpoint `POST /api/v1/configurations/{id}/validate-and-test`
+  encapsulating the pipeline currently glued in React. Migrate the React
+  pipeline to call it.
+- Author `adaptconfig.skill.md` at repo root with frontmatter, when-to-use
+  triggers, API reference with one curl per group, and an end-to-end
+  upload → suggest → generate → validate sample.
+- `scripts/skill_smoke.py` drives the same agent flow against the live API
+  and asserts 7/7 on the gold-standard fixture.
+- `tests/integration/test_skill_api_surface.py` enforces the audit
+  invariants (no orphan UI buttons, composite endpoint exists, etc.).
+
+**Expertise.**
+- Anthropic Skill schema (`name`, `description`, body sections, examples).
+- FastAPI `APIResponse[...]` typing convention used elsewhere in this repo.
+- TanStack Query patterns so the React migration to the new endpoint is
+  one-line.
+
+**Out of scope.**
+- Streaming responses on the composite endpoint (SSE follow-up).
+- A new auth model.
+
+**Acceptance.**
+- `scripts/skill_smoke.py` finishes green against a fresh DB.
+- `tests/integration/test_skill_api_surface.py` passes.
+- React UI behaviour unchanged.
+
+**Related issue.** **#116 — Universal API + drop-in Claude Skill.**
+
+---
+
 ## Dispatch protocol
 
 1. The lead (Claude in the main session) picks one persona at a time.
