@@ -104,7 +104,7 @@ async def run_simulation(
     await db.flush()
 
     # Run simulation — use LLM-powered validation when AI is enabled
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
     if use_llm:
         try:
             from finspark.services.llm.client import get_llm_client

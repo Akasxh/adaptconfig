@@ -105,7 +105,7 @@ async def upload_document(
 
     # Parse document — try LLM first for all doc types, fallback to regex
     try:
-        use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+        use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
 
         file_ext = suffix.lstrip(".")
         if file_ext in ("yaml", "yml", "json"):

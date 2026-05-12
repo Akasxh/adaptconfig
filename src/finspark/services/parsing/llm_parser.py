@@ -50,7 +50,7 @@ async def extract_entities_llm(text: str) -> dict[str, Any] | None:
 
     Returns parsed dict on success, None on failure (caller falls back to regex).
     """
-    if not settings.ai_enabled or not settings.gemini_api_key:
+    if not settings.ai_enabled or not (settings.openai_api_key or settings.gemini_api_key):
         return None
 
     truncated = text[:15000]

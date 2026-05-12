@@ -25,7 +25,7 @@ async def search_integrations(
     """Search adapters, configurations, and simulations using natural language."""
     search_service = IntegrationSearch(db)
 
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
     if use_llm:
         try:
             from finspark.services.llm.client import get_llm_client

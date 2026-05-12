@@ -555,7 +555,7 @@ async def generate_configuration(
         else {},
     }
 
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
     generation_path = "rule_based"
     config: dict[str, Any] = {}
 

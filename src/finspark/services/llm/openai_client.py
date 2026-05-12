@@ -43,7 +43,7 @@ class OpenAIClient:
         timeout: float = 60.0,
     ) -> None:
         self.api_key = api_key or settings.openai_api_key
-        self.model = model or (settings.llm_model or "gpt-4.1-nano")
+        self.model = model or (settings.llm_model or "gpt-4.1-mini")
         self.timeout = timeout
 
         if not self.api_key:
