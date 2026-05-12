@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -9,16 +10,17 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import logging
-
-from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
+from finspark.api.dependencies import (
+    get_audit_service,
+    get_simulator,
+    get_tenant_context,
+    require_role,
+)
 from finspark.core import events
-from finspark.core.config import settings
-from finspark.core.json_utils import safe_json_loads
 from finspark.core.audit import AuditService
+from finspark.core.config import settings
 from finspark.core.database import async_session_factory, get_db
-
-logger = logging.getLogger(__name__)
+from finspark.core.json_utils import safe_json_loads
 from finspark.models.configuration import Configuration
 from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, TenantContext
@@ -27,8 +29,11 @@ from finspark.schemas.simulations import (
     SimulationResponse,
     SimulationStepResult,
 )
+from finspark.services.chain import ChainCycleError
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
 
@@ -80,7 +85,18 @@ async def run_simulation(
     simulator: IntegrationSimulator = Depends(get_simulator),
     audit: AuditService = Depends(get_audit_service),
 ) -> APIResponse[SimulationResponse]:
-    """Run a simulation/test against a configuration."""
+    """Run a simulation/test against a configuration.
+
+    Sequential API chaining (#109 MVP slice): when ``test_type == "smoke"``
+    and the config has 2+ endpoints with any ``depends_on`` set, the
+    endpoints are executed in topological order via :class:`ChainExecutor`
+    so that ``extract``/``inject`` rules drive real value flow between
+    steps.
+
+    Cyclic dependency graphs are rejected with HTTP 400 -- cyclic graphs
+    are explicitly out of scope for the MVP and need #109's full DAG
+    runtime to land.
+    """
     # Fetch configuration
     stmt = select(Configuration).where(
         Configuration.id == request.configuration_id,
@@ -93,7 +109,37 @@ async def run_simulation(
 
     full_config = safe_json_loads(config.full_config, {})
 
-    # Create simulation record
+    # Run simulation — use LLM-powered validation when AI is enabled.
+    # Chain runtime is the responsibility of the rule-based path
+    # (LLM validation operates on the config shape, not the execution).
+    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    try:
+        if use_llm:
+            try:
+                from finspark.services.llm.client import get_llm_client
+
+                llm_client = get_llm_client()
+                steps = await simulator.validate_config_llm(full_config, llm_client)
+            except ChainCycleError:
+                raise
+            except Exception:
+                logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
+                steps = await asyncio.to_thread(
+                    simulator.run_simulation, full_config, test_type=request.test_type
+                )
+        else:
+            steps = await asyncio.to_thread(
+                simulator.run_simulation, full_config, test_type=request.test_type
+            )
+    except ChainCycleError as exc:
+        # Acyclic-only for the #109 MVP -- surface as 400 so the UI can
+        # render a clean error instead of a 500.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Endpoint dependency graph has a cycle: {exc}",
+        ) from exc
+
+    # Create simulation record only after we know the inputs are well-formed.
     simulation = Simulation(
         tenant_id=tenant.tenant_id,
         configuration_id=request.configuration_id,
@@ -102,20 +148,6 @@ async def run_simulation(
     )
     db.add(simulation)
     await db.flush()
-
-    # Run simulation — use LLM-powered validation when AI is enabled
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
-    if use_llm:
-        try:
-            from finspark.services.llm.client import get_llm_client
-
-            llm_client = get_llm_client()
-            steps = await simulator.validate_config_llm(full_config, llm_client)
-        except Exception:
-            logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
-            steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
-    else:
-        steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
 
     # Save results
     total = len(steps)

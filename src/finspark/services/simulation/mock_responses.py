@@ -366,6 +366,20 @@ class _PaymentMock(_AdapterMock):
         ts = int(time.time())
         seed = _seed_from(str(payload.get("reference_id", str(ts))))
 
+        # OAuth token endpoint -- must be matched BEFORE any "/payments/" branch
+        # because OAuth paths like "/payments/auth/token" contain "/payments/".
+        # Extends the existing mock surface to support the #109 MVP chain runtime;
+        # any path containing "/auth/token" or "/oauth/token" returns a
+        # Razorpay-style OAuth token response.
+        if "/auth/token" in endpoint_path or "/oauth/token" in endpoint_path:
+            return {
+                "status": "success",
+                "access_token": f"tok_live_{seed % 99999999:08x}",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": payload.get("scope", "read_write"),
+                "issued_at": ts,
+            }
         if "/payments/create" in endpoint_path or endpoint_path == "/payments":
             amount = payload.get("amount", payload.get("loan_amount", 500000))
             return {

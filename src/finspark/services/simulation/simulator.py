@@ -8,6 +8,11 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 from finspark.schemas.simulations import SimulationStepResult
+from finspark.services.chain import (
+    ChainCycleError,
+    ChainExecutionError,
+    ChainExecutor,
+)
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
 
 logger = logging.getLogger(__name__)
@@ -119,7 +124,16 @@ class IntegrationSimulator:
         config: dict[str, Any],
         test_type: str = "full",
     ) -> list[SimulationStepResult]:
-        """Run a complete simulation of an integration configuration."""
+        """Run a complete simulation of an integration configuration.
+
+        Per-endpoint mode is the default.  When ``test_type == "smoke"``
+        and the config has 2+ endpoints with ``depends_on`` set, the
+        endpoints are driven through :class:`ChainExecutor` instead so
+        that ``extract`` / ``inject`` rules are actually exercised.
+
+        Cycles raise :class:`ChainCycleError`; callers (the simulations
+        route) translate that to HTTP 400.
+        """
         steps: list[SimulationStepResult] = []
 
         # Step 1: Validate configuration structure
@@ -128,11 +142,14 @@ class IntegrationSimulator:
         # Step 2: Validate field mappings
         steps.append(self._test_field_mappings(config))
 
-        # Step 3: Test each endpoint
+        # Step 3: Test each endpoint -- chained or independent
         endpoints = config.get("endpoints", [])
-        for endpoint in endpoints:
-            if endpoint.get("enabled", True):
-                steps.append(self._test_endpoint(endpoint, config))
+        if self._should_use_chain(endpoints, test_type):
+            steps.extend(self._run_chain_sync(endpoints, config))
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    steps.append(self._test_endpoint(endpoint, config))
 
         # Step 4: Test authentication
         steps.append(self._test_auth_config(config))
@@ -148,6 +165,137 @@ class IntegrationSimulator:
             steps.append(self._test_retry_logic(config))
 
         return steps
+
+    @staticmethod
+    def _should_use_chain(endpoints: list[dict[str, Any]], test_type: str) -> bool:
+        """Return True when the chain executor should drive endpoint testing.
+
+        Strict gating per the #109 MVP spec: only ``smoke`` test type, and
+        only when the endpoint list has at least two entries with any
+        ``depends_on`` value.  Single-endpoint or fully-flat configs keep
+        the existing per-endpoint loop (which preserves the gold-standard
+        7/7 fixture path).
+        """
+        if test_type != "smoke":
+            return False
+        enabled = [ep for ep in endpoints if ep.get("enabled", True)]
+        if len(enabled) < 2:
+            return False
+        return any(ep.get("depends_on") for ep in enabled)
+
+    def _run_chain_sync(
+        self,
+        endpoints: list[dict[str, Any]],
+        config: dict[str, Any],
+    ) -> list[SimulationStepResult]:
+        """Run ``endpoints`` through :class:`ChainExecutor`, returning step results.
+
+        Handles the sync/async impedance: ``run_simulation`` is sync but
+        the executor is async.  We ALWAYS run the chain in a worker
+        thread with its own event loop so:
+
+          * The caller's running loop (if any) is not blocked.
+          * The caller's default loop (if any) is not closed -- vital
+            for tests using ``asyncio.get_event_loop()``.
+
+        Cycle errors propagate to the caller (route returns HTTP 400);
+        other chain errors are surfaced as a failed step result so the
+        run still produces the surrounding validation steps.
+        """
+        enabled = [ep for ep in endpoints if ep.get("enabled", True)]
+
+        async def _call_fn(
+            endpoint: dict[str, Any], prepared_request: dict[str, Any]
+        ) -> dict[str, Any]:
+            return self.mock_server.generate_response(
+                endpoint, prepared_request, config=config
+            )
+
+        executor = ChainExecutor(_call_fn)
+
+        start = time.monotonic()
+        try:
+            chain_results = self._await_chain(executor, enabled)
+        except ChainCycleError:
+            # Cycles must surface as 400 at the route boundary.
+            raise
+        except ChainExecutionError as exc:
+            duration = max(1, int((time.monotonic() - start) * 1000))
+            return [
+                SimulationStepResult(
+                    step_name="chain_execution",
+                    status="error",
+                    duration_ms=duration,
+                    error_message=f"Chain execution failed: {exc}",
+                    confidence_score=0.0,
+                )
+            ]
+
+        total_ms = max(1, int((time.monotonic() - start) * 1000))
+        per_step_ms = max(1, total_ms // max(len(chain_results), 1))
+
+        return [
+            self._chain_step_to_result(cr, per_step_ms) for cr in chain_results
+        ]
+
+    @staticmethod
+    def _await_chain(
+        executor: ChainExecutor, endpoints: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Run *executor* synchronously from any thread / loop context.
+
+        The chain is always executed in a dedicated worker thread with its
+        own private event loop.  This avoids two distinct hazards:
+
+          1. ``asyncio.run`` from inside an already-running loop raises
+             ``RuntimeError: asyncio.run() cannot be called from a running
+             event loop`` -- so route-level callers wrapping
+             ``run_simulation`` in ``asyncio.to_thread`` would crash.
+          2. ``asyncio.run`` closes the event loop it created AND any
+             default loop set on the current thread -- so test suites
+             that depend on a persistent default loop (HealthMonitor, etc.)
+             see "There is no current event loop" on subsequent calls.
+
+        Forwarding through a fresh thread gives us a clean loop boundary
+        on either side of the chain run.
+        """
+        import concurrent.futures
+
+        def _worker() -> list[dict[str, Any]]:
+            # Create the coroutine inside the worker so it gets bound to
+            # the worker's event loop, not whatever loop (if any) the
+            # caller has set on its own thread.
+            return asyncio.run(executor.run(endpoints))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_worker).result()
+
+    @staticmethod
+    def _chain_step_to_result(
+        chain_result: dict[str, Any], per_step_ms: int
+    ) -> SimulationStepResult:
+        """Convert a ChainExecutor step dict into a SimulationStepResult."""
+        ep_id = chain_result["endpoint_id"]
+        response = chain_result["response"]
+        request = chain_result["request"]
+        extracted = chain_result["extracted"]
+        has_status = isinstance(response, dict) and "status" in response
+
+        return SimulationStepResult(
+            step_name=f"chained_endpoint_{ep_id}",
+            status="passed" if has_status else "failed",
+            request_payload=request,
+            expected_response={"status": "success"},
+            actual_response={
+                **(response if isinstance(response, dict) else {"raw": response}),
+                "chain_context": {
+                    "extracted": extracted,
+                    "injected_into_request": request,
+                },
+            },
+            duration_ms=per_step_ms,
+            confidence_score=0.9 if has_status else 0.3,
+        )
 
     def run_simulation_stream(
         self,
@@ -207,7 +355,7 @@ class IntegrationSimulator:
                 asyncio.to_thread(step_fn),
                 timeout=timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return SimulationStepResult(
                 step_name="unknown_step",
                 status="error",

@@ -23,6 +23,7 @@ from finspark.api.dependencies import (
     get_tenant_context,
     require_role,
 )
+from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
@@ -52,9 +53,12 @@ from finspark.schemas.configurations import (
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
-from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
-from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
+from finspark.services.llm.client import (  # noqa: F401 -- GeminiClient is patched by tests
+    GeminiAPIError,
+    GeminiClient,
+    get_llm_client,
+)
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
@@ -686,6 +690,7 @@ async def generate_configuration(
     background_tasks.add_task(deliver_event, tenant.tenant_id, events.CONFIG_CREATED, config_created_data)
 
     field_mappings = config.get("field_mappings", [])
+    config_endpoints = [ep for ep in config.get("endpoints", []) if isinstance(ep, dict)]
 
     return APIResponse(
         data=ConfigurationResponse(
@@ -696,6 +701,7 @@ async def generate_configuration(
             status=configuration.status,
             version=configuration.version,
             field_mappings=[FieldMapping(**m) for m in field_mappings],
+            endpoints=config_endpoints,
             created_at=configuration.created_at,
             updated_at=configuration.updated_at,
         ),
@@ -721,6 +727,7 @@ async def get_configuration(
         raise HTTPException(status_code=404, detail="Configuration not found")
 
     field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
+    endpoints = _config_endpoints(config)
 
     return APIResponse(
         data=ConfigurationResponse(
@@ -731,15 +738,35 @@ async def get_configuration(
             status=config.status,
             version=config.version,
             field_mappings=[FieldMapping(**m) for m in field_mappings],
+            endpoints=endpoints,
             created_at=config.created_at,
             updated_at=config.updated_at,
         ),
     )
 
 
+def _config_endpoints(config: Configuration) -> list[dict[str, Any]]:
+    """Pull the endpoints array out of a Configuration row's full_config blob.
+
+    Used by the response serializers so the UI can render the chain
+    (#109 MVP slice) without making a second round-trip.  Returns ``[]``
+    on missing / malformed full_config -- the existing per-endpoint loop
+    semantics handle absence cleanly.
+    """
+    if not config.full_config:
+        return []
+    try:
+        parsed = json.loads(config.full_config)
+    except (TypeError, ValueError):
+        return []
+    raw = parsed.get("endpoints", []) if isinstance(parsed, dict) else []
+    return [ep for ep in raw if isinstance(ep, dict)]
+
+
 def _serialize_config(config: Configuration) -> ConfigurationResponse:
     """Serialize a Configuration ORM object to a ConfigurationResponse."""
     field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
+    endpoints = _config_endpoints(config)
     return ConfigurationResponse(
         id=config.id,
         name=config.name,
@@ -748,6 +775,7 @@ def _serialize_config(config: Configuration) -> ConfigurationResponse:
         status=config.status,
         version=config.version,
         field_mappings=[FieldMapping(**m) for m in field_mappings],
+        endpoints=endpoints,
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -959,6 +987,7 @@ async def list_configurations(
                 status=c.status,
                 version=c.version,
                 field_mappings=json.loads(c.field_mappings) if c.field_mappings else [],
+                endpoints=_config_endpoints(c),
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )

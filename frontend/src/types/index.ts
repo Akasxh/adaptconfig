@@ -20,6 +20,12 @@ export interface AdapterEndpoint {
   description: string;
   request_fields: Record<string, unknown>[];
   response_fields: Record<string, unknown>[];
+  // Sequential API chaining (#109 MVP slice). All four fields are
+  // optional -- absence means "this endpoint runs independently".
+  id?: string;
+  depends_on?: string | string[];
+  extract?: Record<string, string>;  // {key: JSONPath}
+  inject?: Record<string, string>;   // {dotted.path: template}
 }
 
 export interface AdapterVersion {
@@ -96,6 +102,9 @@ export interface Configuration {
   field_mappings: FieldMapping[];
   transformation_rules?: Record<string, unknown>[];
   hooks?: Record<string, unknown>[];
+  // Chain runtime (#109 MVP slice): per-endpoint chain spec used by the
+  // expanded card to render the [A] -> [B] -> [C] flow.
+  endpoints?: AdapterEndpoint[];
   created_at: string;
   updated_at: string;
   // legacy optional fields kept for backward compat
