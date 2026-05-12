@@ -183,7 +183,7 @@ class TestIssue83FrontendRoleHeader:
         """The frontend API module should not hardcode X-Tenant-Role."""
         import pathlib
 
-        api_ts = pathlib.Path("/home/akash/PROJECTS/finspark/frontend/src/lib/api.ts")
+        api_ts = pathlib.Path(__file__).parents[2] / "frontend" / "src" / "lib" / "api.ts"
         content = api_ts.read_text()
         assert "X-Tenant-Role" not in content
 
@@ -449,7 +449,7 @@ class TestIssue92AuthGuardJWTExpiry:
         """auth.ts should contain JWT decode logic for expiry checking."""
         import pathlib
 
-        auth_ts = pathlib.Path("/home/akash/PROJECTS/finspark/frontend/src/lib/auth.ts")
+        auth_ts = pathlib.Path(__file__).parents[2] / "frontend" / "src" / "lib" / "auth.ts"
         content = auth_ts.read_text()
         assert "exp" in content
         assert "atob" in content or "Buffer" in content
