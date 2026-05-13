@@ -165,6 +165,7 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["document", doc.id],
     queryFn: () => documentsApi.get(doc.id),
+    refetchInterval: (q) => q.state.data?.data?.status === "parsing" ? 3000 : false,
   });
 
   const detail = data?.data as DocumentDetail | null;
@@ -404,6 +405,11 @@ export default function Documents() {
   const { data, error, isLoading } = useQuery({
     queryKey: ["documents"],
     queryFn: () => documentsApi.list(),
+    refetchInterval: (query) => {
+      const docs = query.state.data?.data;
+      if (docs && docs.some((d: Document) => d.status === "parsing")) return 3000;
+      return false;
+    },
   });
 
   const uploadMutation = useMutation({

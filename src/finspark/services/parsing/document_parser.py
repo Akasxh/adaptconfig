@@ -20,6 +20,67 @@ from finspark.services.llm.client import GeminiAPIError, GeminiClient
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_url(value: str) -> bool:
+    """True if the string is a plausible absolute HTTP(S) URL with a hostname."""
+    if not value or not isinstance(value, str):
+        return False
+    value = value.strip()
+    if not (value.startswith("http://") or value.startswith("https://")):
+        return False
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(value)
+        # Reject prose with spaces or no host
+        return bool(u.netloc) and " " not in value and "." in u.netloc
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _extract_base_url_from_spec_text(text: str) -> str:
+    """Pull the first servers[].url out of an OpenAPI/JSON-spec text blob.
+
+    Used as a last-resort fallback when LLM output didn't yield a real URL.
+    """
+    if not text:
+        return ""
+    # Try YAML
+    try:
+        data = yaml.safe_load(text)
+        if isinstance(data, dict):
+            servers = data.get("servers") or []
+            if isinstance(servers, list):
+                for s in servers:
+                    if isinstance(s, dict):
+                        url = (s.get("url") or "").strip()
+                        if _looks_like_url(url):
+                            return url
+            # Some specs just have a host/basePath
+            host = data.get("host")
+            base = data.get("basePath", "")
+            schemes = data.get("schemes") or ["https"]
+            if host:
+                scheme = "https" if "https" in schemes else schemes[0]
+                candidate = f"{scheme}://{host}{base}"
+                if _looks_like_url(candidate):
+                    return candidate
+    except yaml.YAMLError:
+        pass
+    # Try JSON-like
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            servers = data.get("servers") or []
+            if isinstance(servers, list):
+                for s in servers:
+                    if isinstance(s, dict):
+                        url = (s.get("url") or "").strip()
+                        if _looks_like_url(url):
+                            return url
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return ""
+
+
 class DocumentParser:
     """Parses various document formats and extracts integration requirements."""
 
@@ -147,11 +208,18 @@ class DocumentParser:
             if sla_raw.get("availability_percent"):
                 sla_list.append(f"Availability: {sla_raw['availability_percent']}%")
 
+        llm_base_url = str(llm_data.get("base_url", "")).strip()
+        resolved_base_url = (
+            llm_base_url if _looks_like_url(llm_base_url)
+            else _extract_base_url_from_spec_text(original_text)
+        )
+
         return ParsedDocumentResult(
             doc_type=doc_type,
             title=llm_data.get("title", self._extract_title(original_text)),
             summary=llm_data.get("summary", self._extract_summary(original_text)),
             services_identified=llm_data.get("services_identified", []),
+            base_url=resolved_base_url,
             endpoints=endpoints,
             fields=fields,
             auth_requirements=auth,
@@ -189,6 +257,7 @@ Return a JSON object with exactly these keys:
   "title": "Document title or best guess from content",
   "summary": "One paragraph summary of the document purpose",
   "services_identified": ["List of external service/API/provider names mentioned"],
+  "base_url": "https://api.example.com/v1 — the actual API base URL string, or empty if none",
   "endpoints": [
     {{"path": "/api/path", "method": "POST", "description": "What this endpoint does", "is_mandatory": true}}
   ],
@@ -208,6 +277,7 @@ Rules:
 - Infer doc_type from the filename and content
 - Focus on Indian fintech terms: CIBIL, PAN, Aadhaar, GSTIN, UPI, NEFT, IMPS, eKYC, mTLS, etc.
 - Include ALL endpoints and fields explicitly mentioned or strongly implied
+- base_url MUST be a real absolute URL starting with http:// or https://; if the document is an OpenAPI spec, copy the first servers[].url verbatim. Do NOT put a description sentence here.
 - sla_requirements values must be strings (e.g. "200ms", "99.9%"); omit keys not found
 - Return ONLY valid JSON, no markdown fences"""
 
@@ -284,6 +354,20 @@ Rules:
                 else self._extract_sections(text)
             )
 
+            # Resolve base_url: trust the LLM only if it returned an actual URL;
+            # otherwise fall back to re-parsing the raw text as YAML/JSON (the spec
+            # itself usually has servers[].url even when LLM summarized it away).
+            llm_base_url = str(llm_data.get("base_url", "")).strip()
+            if _looks_like_url(llm_base_url):
+                resolved_base_url = llm_base_url
+            else:
+                resolved_base_url = _extract_base_url_from_spec_text(text)
+                if llm_base_url and not resolved_base_url:
+                    logger.warning(
+                        "llm_returned_non_url_base_url filename=%s value=%r",
+                        filename, llm_base_url[:120],
+                    )
+
             total_entities = (
                 len(endpoints)
                 + len(fields)
@@ -293,9 +377,8 @@ Rules:
             confidence = min(1.0, max(0.7, total_entities / 20.0))
 
             logger.info(
-                "parse_with_llm_succeeded filename=%s entities=%d",
-                filename,
-                total_entities,
+                "parse_with_llm_succeeded filename=%s entities=%d base_url=%r",
+                filename, total_entities, resolved_base_url,
             )
 
             return ParsedDocumentResult(
@@ -303,6 +386,7 @@ Rules:
                 title=llm_data.get("title", self._extract_title(text)),
                 summary=llm_data.get("summary", self._extract_summary(text)),
                 services_identified=llm_data.get("services_identified", []),
+                base_url=resolved_base_url,
                 endpoints=endpoints,
                 fields=fields,
                 auth_requirements=auth,
@@ -517,7 +601,9 @@ Rules:
                 )
             )
 
-        base_urls = [s.get("url", "") for s in servers]
+        base_urls = [s.get("url", "") for s in servers if s.get("url")]
+        # First validated URL becomes the canonical base_url for downstream use.
+        primary_base_url = next((u for u in base_urls if _looks_like_url(u)), "")
         services = [info.get("title", "API Service")]
 
         return ParsedDocumentResult(
@@ -525,6 +611,7 @@ Rules:
             title=info.get("title", ""),
             summary=info.get("description", ""),
             services_identified=services,
+            base_url=primary_base_url,
             endpoints=endpoints,
             fields=fields,
             auth_requirements=auth_reqs,

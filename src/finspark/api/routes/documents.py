@@ -103,44 +103,80 @@ async def upload_document(
     db.add(doc)
     await db.flush()
 
-    # Parse document — try LLM first for all doc types, fallback to regex
-    try:
-        use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
+    # Extract raw text — different strategy per file type
+    file_ext = suffix.lstrip(".")
+    if file_ext in ("yaml", "yml", "json"):
+        raw_text = file_bytes.decode("utf-8", errors="replace")
+    elif file_ext == "pdf":
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(file_bytes))
+        raw_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+    elif file_ext == "docx":
+        from docx import Document as DocxDocument
+        import io
+        docx_doc = DocxDocument(io.BytesIO(file_bytes))
+        raw_text = "\n".join(p.text for p in docx_doc.paragraphs if p.text.strip())
+    else:
+        raw_text = ""
 
-        file_ext = suffix.lstrip(".")
-        if file_ext in ("yaml", "yml", "json"):
-            raw_text = file_bytes.decode("utf-8", errors="replace")
-        else:
-            raw_text = ""
+    use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
 
-        result = None
-        if use_llm:
+    # Quick regex parse (fast) — store as interim result
+    regex_result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
+    doc.parsed_result = regex_result.model_dump_json()
+    doc.raw_text = regex_result.summary[:5000]
+
+    if use_llm:
+        # LLM parsing is slow — run in background, return immediately with "parsing"
+        doc_id = doc.id
+        tenant_id = tenant.tenant_id
+        tenant_name = tenant.tenant_name
+        _bg_raw = raw_text or regex_result.summary
+        _bg_safe_name = safe_name
+        _bg_doc_type = doc_type
+        _bg_regex_result = regex_result
+        _bg_parser = parser
+
+        async def _parse_in_background() -> None:
+            from finspark.core.database import async_session_factory
+
             try:
                 from finspark.services.llm.client import get_llm_client
-
                 llm_client = get_llm_client()
-                # Get raw text for binary docs via regex parser first
-                if not raw_text:
-                    regex_result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
-                    raw_text = regex_result.summary
-
-                result = await parser.parse_with_llm(raw_text, safe_name, llm_client)
-                logger.info("document_parsed_via_llm filename=%s", safe_name)
+                result = await _bg_parser.parse_with_llm(_bg_raw, _bg_safe_name, llm_client)
+                logger.info("document_parsed_via_llm filename=%s", _bg_safe_name)
             except Exception:
-                logger.warning("LLM parsing failed for %s, falling back to regex", safe_name, exc_info=True)
-                result = None
+                logger.warning("LLM parsing failed for %s, using regex", _bg_safe_name, exc_info=True)
+                result = _bg_regex_result
 
-        if result is None:
-            result = await asyncio.to_thread(parser.parse, file_path, doc_type=doc_type)
+            try:
+                async with async_session_factory() as bg_db:
+                    stmt = select(Document).where(Document.id == doc_id)
+                    row = (await bg_db.execute(stmt)).scalar_one_or_none()
+                    if row:
+                        row.parsed_result = result.model_dump_json()
+                        row.raw_text = result.summary[:5000]
+                        row.status = "parsed"
+                        await bg_db.commit()
+                        logger.info("background_parse_complete doc_id=%s", doc_id)
+            except Exception:
+                logger.error("background_parse_db_failed doc_id=%s", doc_id, exc_info=True)
 
-        doc.parsed_result = result.model_dump_json()
-        doc.raw_text = result.summary[:5000]
+            try:
+                wd = {"tenant_id": tenant_id, "document_id": doc_id, "filename": _bg_safe_name, "doc_type": _bg_doc_type}
+                await events.emit(events.DOCUMENT_PARSED, wd)
+                await deliver_event(tenant_id, events.DOCUMENT_PARSED, wd)
+            except Exception:
+                logger.warning("background_webhook_failed doc_id=%s", doc_id, exc_info=True)
+
+        asyncio.create_task(_parse_in_background())
+    else:
+        # No LLM — regex is already done, mark as parsed
         doc.status = "parsed"
-    except Exception as e:
-        doc.status = "failed"
-        doc.error_message = str(e)
 
-    await db.flush()
+    # Commit so the document is visible immediately for polling
+    await db.commit()
 
     webhook_data = {
         "tenant_id": tenant.tenant_id,
@@ -148,12 +184,8 @@ async def upload_document(
         "filename": doc.filename,
         "doc_type": doc_type,
     }
-    # Always fire document.uploaded; fire document.parsed only on success
     await events.emit(events.DOCUMENT_UPLOADED, webhook_data)
     background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_UPLOADED, webhook_data)
-    if doc.status == "parsed":
-        await events.emit(events.DOCUMENT_PARSED, webhook_data)
-        background_tasks.add_task(deliver_event, tenant.tenant_id, events.DOCUMENT_PARSED, webhook_data)
 
     await audit.log(
         tenant_id=tenant.tenant_id,
@@ -165,7 +197,7 @@ async def upload_document(
     )
 
     return APIResponse(
-        success=doc.status == "parsed",
+        success=True,
         data=DocumentUploadResponse(
             id=doc.id,
             filename=doc.filename,
@@ -174,9 +206,9 @@ async def upload_document(
             status=doc.status,
             created_at=doc.created_at,
         ),
-        message=f"Document {doc.status}"
-        if doc.status == "parsed"
-        else doc.error_message or "Parsing failed",
+        message="Document uploaded, parsing in progress"
+        if doc.status == "parsing"
+        else f"Document {doc.status}",
     )
 
 

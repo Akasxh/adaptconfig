@@ -26,7 +26,7 @@ from finspark.api.dependencies import (
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
-from finspark.models.adapter import AdapterVersion
+from finspark.models.adapter import Adapter, AdapterVersion
 from finspark.models.configuration import Configuration, ConfigurationHistory
 from finspark.models.document import Document
 from finspark.schemas.common import APIResponse, ConfigStatus, TenantContext
@@ -1000,4 +1000,359 @@ async def delete_configuration(
     return APIResponse(
         data={"id": config_id, "deleted": True},
         message=f"Configuration '{config_name}' deleted",
+    )
+
+
+def _classify_health(status_code: int | None, error: str | None) -> str:
+    """Classify a probe result into a health bucket.
+
+    ok               — 2xx/3xx, endpoint is serving traffic
+    auth_required    — 401/403, endpoint exists, just needs credentials (still healthy)
+    not_found        — 404, endpoint path doesn't exist on this host
+    client_error     — other 4xx, client-side issue with the request
+    server_error     — 5xx, the API itself is failing
+    unreachable      — DNS/TCP/TLS/timeout, didn't get an HTTP response at all
+    """
+    if error is not None or status_code is None:
+        return "unreachable"
+    if 200 <= status_code < 400:
+        return "ok"
+    if status_code in (401, 403):
+        return "auth_required"
+    if status_code == 404:
+        return "not_found"
+    if 400 <= status_code < 500:
+        return "client_error"
+    if 500 <= status_code < 600:
+        return "server_error"
+    return "unreachable"
+
+
+async def _probe(client: "httpx.AsyncClient", url: str, preferred_method: str) -> dict[str, Any]:
+    """Issue a real HTTP request and return a transparent probe record.
+
+    Returns the actual URL hit, the method used (after any HEAD→GET fallback),
+    status code, latency, and a health classification. No simulation.
+    """
+    import httpx
+    import time
+
+    method_used = "HEAD"
+    start = time.perf_counter()
+    try:
+        resp = await client.head(url)
+        # Some servers return 405 for HEAD; retry with GET so the probe is meaningful.
+        if resp.status_code == 405:
+            method_used = "GET"
+            resp = await client.get(url)
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        return {
+            "target_url": url,
+            "request_method": method_used,
+            "configured_method": preferred_method,
+            "status_code": resp.status_code,
+            "status_text": resp.reason_phrase or "",
+            "latency_ms": latency_ms,
+            "error": None,
+            "reachable": True,
+            "health": _classify_health(resp.status_code, None),
+        }
+    except httpx.ConnectError as exc:
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": latency_ms,
+            "error": f"Connection failed: {str(exc)[:160] or 'host unreachable'}",
+            "reachable": False, "health": "unreachable",
+        }
+    except httpx.ConnectTimeout:
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": 8000,
+            "error": "Connect timeout (>8s) — host did not accept TCP connection",
+            "reachable": False, "health": "unreachable",
+        }
+    except httpx.ReadTimeout:
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": 8000,
+            "error": "Read timeout (>8s) — connected but no response body",
+            "reachable": False, "health": "unreachable",
+        }
+    except httpx.TimeoutException:
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": 8000,
+            "error": "Timeout (>8s)",
+            "reachable": False, "health": "unreachable",
+        }
+    except httpx.InvalidURL as exc:
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": None,
+            "error": f"Invalid URL: {exc}",
+            "reachable": False, "health": "unreachable",
+        }
+    except Exception as exc:  # noqa: BLE001
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        return {
+            "target_url": url, "request_method": method_used, "configured_method": preferred_method,
+            "status_code": None, "status_text": "", "latency_ms": latency_ms,
+            "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+            "reachable": False, "health": "unreachable",
+        }
+
+
+def _join_url(base: str, path: str) -> str:
+    """Join a base URL and a path tolerantly (handles missing / trailing slashes)."""
+    base = (base or "").rstrip("/")
+    path = (path or "").strip()
+    if not base and not path:
+        return ""
+    if not path:
+        return base
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{base}/{path.lstrip('/')}"
+
+
+def _resolve_probe_targets(
+    full_config: dict[str, Any],
+    doc: Document | None,
+    adapter_version: AdapterVersion | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build the list of URLs to probe for this configuration.
+
+    Precedence per source:
+      1. document   — endpoints parsed from the linked document's API spec
+      2. adapter    — endpoints declared on the adapter version (skips dupes)
+      3. customized — endpoints in full_config that don't match either of the above
+
+    Returns (targets, meta) where meta carries display info for the panel header.
+    """
+    # Parse the document's parsed_result to pull endpoints + any extracted base URL.
+    doc_endpoints: list[dict[str, Any]] = []
+    doc_base_url = ""
+    doc_filename = ""
+    if doc and doc.parsed_result:
+        try:
+            parsed = json.loads(doc.parsed_result)
+            doc_endpoints = parsed.get("endpoints", []) or []
+            # The parser stores base URLs as a comma-separated string under sections.base_urls.
+            raw_bases = (parsed.get("sections") or {}).get("base_urls") or ""
+            doc_base_url = next((b.strip() for b in raw_bases.split(",") if b.strip()), "")
+            doc_filename = doc.filename or ""
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    # Adapter-version endpoints + base URL.
+    av_endpoints: list[dict[str, Any]] = []
+    av_base_url = ""
+    if adapter_version:
+        av_base_url = (adapter_version.base_url or "").strip()
+        if adapter_version.endpoints:
+            try:
+                av_endpoints = json.loads(adapter_version.endpoints) or []
+            except json.JSONDecodeError:
+                pass
+
+    # Pick a primary base for joining document paths: prefer the document's own,
+    # otherwise borrow the adapter's (common when the spec only listed paths).
+    doc_join_base = doc_base_url or av_base_url
+    cfg_base_url = (full_config.get("base_url") or "").strip()
+    cfg_endpoints = full_config.get("endpoints", []) or []
+
+    targets: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    def _add(url: str, method: str, description: str, source: str, source_label: str) -> None:
+        if not url or url in seen_urls:
+            return
+        seen_urls.add(url)
+        path = ""
+        try:
+            from urllib.parse import urlparse
+            path = urlparse(url).path or ""
+        except Exception:  # noqa: BLE001
+            pass
+        label = f"{method} {path or url}"
+        if description and description != path:
+            label += f" — {description}"
+        targets.append({
+            "url": url,
+            "method": method,
+            "description": description,
+            "source": source,
+            "source_label": source_label,
+            "label": label,
+        })
+
+    # 1. Document endpoints (the authoritative source — what the spec said).
+    for ep in doc_endpoints:
+        method = (ep.get("method") or "GET").upper()
+        url = _join_url(doc_join_base, ep.get("path") or "")
+        _add(url, method, ep.get("description", "") or "", "document", doc_filename or "source document")
+
+    # 2. Adapter-version endpoints (additional / fallback endpoints declared on the adapter).
+    for ep in av_endpoints:
+        method = (ep.get("method") or "GET").upper()
+        url = _join_url(av_base_url, ep.get("path") or "")
+        _add(url, method, ep.get("description", "") or "", "adapter", "adapter version")
+
+    # Note: full_config endpoints are intentionally NOT probed. The connectivity check is
+    # for verifying the real provider API (document + adapter spec), not arbitrary local
+    # overrides like sandbox/test hosts that the user may have stashed in full_config.
+    _ = cfg_base_url, cfg_endpoints  # noqa: F841 — preserved in meta for display only
+
+    # Also probe the primary base URL (document or adapter) as a sanity check.
+    primary_base = doc_base_url or av_base_url
+    if primary_base:
+        primary_source = "document" if doc_base_url else "adapter"
+        primary_label = doc_filename if doc_base_url else "adapter version"
+        # Insert at the top so the base URL shows first.
+        existing_idx = next((i for i, t in enumerate(targets) if t["url"] == primary_base), None)
+        if existing_idx is None:
+            seen_urls.add(primary_base)
+            targets.insert(0, {
+                "url": primary_base,
+                "method": "GET",
+                "description": "Base URL",
+                "source": primary_source,
+                "source_label": primary_label or f"{primary_source} base",
+                "label": f"Base URL ({primary_base})",
+            })
+
+    meta = {
+        "document_filename": doc_filename or None,
+        "document_base_url": doc_base_url or None,
+        "adapter_base_url": av_base_url or None,
+        "config_base_url": cfg_base_url or None,
+        "primary_base_url": primary_base or cfg_base_url or "",
+    }
+    return targets, meta
+
+
+@router.post("/{config_id}/connectivity-check")
+async def connectivity_check(
+    config_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+) -> StreamingResponse:
+    """Stream live HTTP probes against this configuration's real provider endpoints.
+
+    Resolves what to probe from the source document's parsed endpoints and the
+    adapter version's declared endpoints (config-level overrides are ignored —
+    only the real spec is tested). Returns an NDJSON stream so the client can
+    show each probe's result the moment it lands, instead of waiting for the
+    whole batch.
+
+    Stream format (newline-delimited JSON):
+      {"type":"start",   "total":N, "meta":{...}, "source_counts":{...}}
+      {"type":"probe",   "data":{<full probe record>}}     (repeated)
+      {"type":"done",    "healthy_count":H, "reachable_count":R, "total_count":T,
+                         "all_healthy":bool, "all_reachable":bool, "summary":"..."}
+    """
+    import httpx
+
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    full_config = json.loads(config.full_config) if config.full_config else {}
+
+    doc: Document | None = None
+    if config.document_id:
+        doc_res = await db.execute(
+            select(Document).where(
+                Document.id == config.document_id,
+                Document.tenant_id == tenant.tenant_id,
+            )
+        )
+        doc = doc_res.scalar_one_or_none()
+
+    adapter_version: AdapterVersion | None = None
+    adapter_name = ""
+    if config.adapter_version_id:
+        av_res = await db.execute(
+            select(AdapterVersion).where(AdapterVersion.id == config.adapter_version_id)
+        )
+        adapter_version = av_res.scalar_one_or_none()
+        if adapter_version:
+            adp_res = await db.execute(
+                select(Adapter).where(Adapter.id == adapter_version.adapter_id)
+            )
+            adapter = adp_res.scalar_one_or_none()
+            adapter_name = adapter.name if adapter else ""
+
+    targets, meta = _resolve_probe_targets(full_config, doc, adapter_version)
+    meta["adapter_name"] = adapter_name or None
+    meta["adapter_version"] = adapter_version.version if adapter_version else None
+
+    pre_source_counts = {
+        "document": sum(1 for t in targets if t["source"] == "document"),
+        "adapter": sum(1 for t in targets if t["source"] == "adapter"),
+    }
+
+    async def stream():
+        start_event = {
+            "type": "start",
+            "total": len(targets),
+            "meta": meta,
+            "source_counts": pre_source_counts,
+            "base_url": meta.get("primary_base_url", ""),
+        }
+        yield json.dumps(start_event) + "\n"
+
+        if not targets:
+            done_event = {
+                "type": "done",
+                "healthy_count": 0, "reachable_count": 0, "total_count": 0,
+                "all_healthy": False, "all_reachable": False,
+                "summary": "Nothing to probe — no endpoints in document or adapter",
+            }
+            yield json.dumps(done_event) + "\n"
+            return
+
+        healthy = 0
+        reachable = 0
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            for t in targets:
+                probe = await _probe(client, t["url"], t["method"])
+                probe["label"] = t["label"]
+                probe["source"] = t["source"]
+                probe["source_label"] = t["source_label"]
+                if probe["reachable"]:
+                    reachable += 1
+                if probe["health"] in ("ok", "auth_required"):
+                    healthy += 1
+                yield json.dumps({"type": "probe", "data": probe}) + "\n"
+
+        total = len(targets)
+        if healthy == total:
+            summary = f"All {total} targets healthy"
+        elif reachable == 0:
+            summary = "No targets reachable — host appears down or DNS fails"
+        else:
+            summary = f"{healthy}/{total} healthy · {reachable}/{total} reachable"
+
+        done_event = {
+            "type": "done",
+            "healthy_count": healthy,
+            "reachable_count": reachable,
+            "total_count": total,
+            "all_healthy": healthy == total,
+            "all_reachable": reachable == total,
+            "summary": summary,
+        }
+        yield json.dumps(done_event) + "\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

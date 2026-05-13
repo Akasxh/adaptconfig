@@ -1,7 +1,8 @@
-import { adaptersApi } from "@/lib/api";
-import type { Adapter, AdapterVersion } from "@/types";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, GitBranch, Globe, Plug, RefreshCw, Shield, X, Zap } from "lucide-react";
+import { useToast } from "@/components/Toast";
+import { adaptersApi, documentsApi } from "@/lib/api";
+import type { Adapter, AdapterVersion, Document } from "@/types";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, ChevronDown, GitBranch, Globe, Loader2, Plug, Plus, RefreshCw, Shield, X, Zap } from "lucide-react";
 import { useState } from "react";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -156,10 +157,46 @@ function SkeletonCard() {
 
 // ── Version panel ──────────────────────────────────────────────────────────
 
+function isValidBaseUrl(v: string | undefined | null): boolean {
+  if (!v) return false;
+  const s = v.trim();
+  if (s.includes(" ")) return false;
+  if (!(s.startsWith("http://") || s.startsWith("https://"))) return false;
+  try {
+    const u = new URL(s);
+    return Boolean(u.host) && u.host.includes(".");
+  } catch {
+    return false;
+  }
+}
+
 function VersionPanel({ version, adapterId }: { version: AdapterVersion; adapterId: string }) {
   const [open, setOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [editingBaseUrl, setEditingBaseUrl] = useState(false);
+  const [baseUrlDraft, setBaseUrlDraft] = useState(version.base_url ?? "");
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const statusCls = version.status === "active" ? "badge-green" : "badge-gray";
+  const baseUrlIsValid = isValidBaseUrl(version.base_url);
+  const baseUrlIsMissing = !version.base_url;
+  const baseUrlIsBroken = !baseUrlIsMissing && !baseUrlIsValid;
+
+  const patchVersionMutation = useMutation({
+    mutationFn: (patch: { base_url: string }) =>
+      adaptersApi.patchVersion(adapterId, version.id, patch),
+    onSuccess: () => {
+      toast("Base URL updated.", "success");
+      setEditingBaseUrl(false);
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to update base URL.";
+      toast(msg, "error");
+    },
+  });
 
   const { data: deprData } = useQuery({
     queryKey: ["adapter-deprecation", adapterId, version.version],
@@ -219,21 +256,39 @@ function VersionPanel({ version, adapterId }: { version: AdapterVersion; adapter
             {version.auth_type}
           </span>
         )}
-        {version.base_url && (
+        {version.base_url ? (
           <code
             className="mono"
+            title={version.base_url}
             style={{
               marginLeft: "auto",
               fontSize: "0.6875rem",
-              color: "var(--color-brand-light)",
+              color: baseUrlIsValid ? "var(--color-brand-light)" : "#f59e0b",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
               maxWidth: "11rem",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.25rem",
             }}
           >
-            {version.base_url}
+            {baseUrlIsBroken && <AlertTriangle size={11} style={{ flexShrink: 0 }} />}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{version.base_url}</span>
           </code>
+        ) : (
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: "0.6875rem",
+              color: "#f59e0b",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.25rem",
+            }}
+          >
+            <AlertTriangle size={11} /> no base URL
+          </span>
         )}
         <ChevronDown
           size={13}
@@ -377,6 +432,92 @@ function VersionPanel({ version, adapterId }: { version: AdapterVersion; adapter
               )}
             </div>
           )}
+
+          {/* Base URL row — view / edit / repair invalid values */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+              <p className="section-label" style={{ margin: 0 }}>Base URL</p>
+              {!editingBaseUrl && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ fontSize: "0.6875rem", padding: "3px 8px" }}
+                  onClick={() => { setBaseUrlDraft(version.base_url ?? ""); setEditingBaseUrl(true); }}
+                >
+                  {version.base_url ? "Edit" : "Set"}
+                </button>
+              )}
+            </div>
+            {(baseUrlIsMissing || baseUrlIsBroken) && !editingBaseUrl && (
+              <div style={{
+                padding: "0.5rem 0.625rem", borderRadius: "0.375rem",
+                background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)",
+                display: "flex", alignItems: "flex-start", gap: "0.5rem",
+              }}>
+                <AlertTriangle size={13} style={{ color: "#f59e0b", flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                  {baseUrlIsMissing
+                    ? "This adapter has no base URL. Connectivity checks and live calls will fail until you set one."
+                    : <>The stored base URL doesn't look like a valid http(s) URL — looks like the document parser captured a description instead. Click Edit to paste the correct URL.</>}
+                </div>
+              </div>
+            )}
+            {editingBaseUrl ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  patchVersionMutation.mutate({ base_url: baseUrlDraft.trim() });
+                }}
+                style={{ display: "flex", gap: "0.375rem", alignItems: "center" }}
+              >
+                <input
+                  type="url"
+                  className="mono"
+                  value={baseUrlDraft}
+                  onChange={(e) => setBaseUrlDraft(e.target.value)}
+                  placeholder="https://api.provider.com/v1"
+                  autoFocus
+                  style={{
+                    flex: 1, fontSize: "0.75rem", padding: "0.375rem 0.5rem",
+                    background: "var(--color-bg-base)", border: "1px solid var(--color-border-strong)",
+                    borderRadius: "0.375rem", color: "var(--color-text-primary)",
+                  }}
+                />
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ fontSize: "0.6875rem", padding: "5px 10px" }}
+                  disabled={patchVersionMutation.isPending || !baseUrlDraft.trim()}
+                >
+                  {patchVersionMutation.isPending ? (
+                    <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
+                  ) : "Save"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ fontSize: "0.6875rem", padding: "5px 10px" }}
+                  onClick={() => { setEditingBaseUrl(false); setBaseUrlDraft(version.base_url ?? ""); }}
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <code
+                className="mono"
+                style={{
+                  fontSize: "0.75rem",
+                  color: baseUrlIsValid ? "var(--color-brand-light)" : "#f59e0b",
+                  padding: "0.375rem 0.5rem", borderRadius: "0.375rem",
+                  background: "rgba(15,23,36,0.4)", border: "1px solid var(--color-border)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  display: "block",
+                }}
+              >
+                {version.base_url || "(not set)"}
+              </code>
+            )}
+          </div>
 
           {version.endpoints.length === 0 ? (
             <p style={{ fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
@@ -638,7 +779,7 @@ function AdapterModal({ adapter, onClose }: { adapter: Adapter; onClose: () => v
 
 // ── Adapter card ───────────────────────────────────────────────────────────
 
-function AdapterCard({ adapter, onClick }: { adapter: Adapter; onClick: () => void }) {
+function AdapterCard({ adapter, onClick, onDelete }: { adapter: Adapter; onClick: () => void; onDelete?: () => void }) {
   const badge = categoryBadge(adapter.category);
   const epCount = totalEndpoints(adapter);
   const ver = latestVersion(adapter);
@@ -775,14 +916,30 @@ function AdapterCard({ adapter, onClick }: { adapter: Adapter; onClick: () => vo
             {epCount} ep.
           </span>
         </div>
-        {ver && (
-          <span
-            className="mono"
-            style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)" }}
-          >
-            v{ver}
-          </span>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          {ver && (
+            <span
+              className="mono"
+              style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)" }}
+            >
+              v{ver}
+            </span>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              title="Delete adapter"
+              style={{
+                background: "none", border: "1px solid rgba(220,38,38,0.3)",
+                borderRadius: 4, padding: "2px 6px", cursor: "pointer",
+                color: "var(--color-error)", fontSize: 11, display: "flex", alignItems: "center", gap: 3,
+              }}
+            >
+              <X size={10} /> Delete
+            </button>
+          )}
+        </div>
       </div>
     </button>
   );
@@ -790,13 +947,113 @@ function AdapterCard({ adapter, onClick }: { adapter: Adapter; onClick: () => vo
 
 // ── Page ───────────────────────────────────────────────────────────────────
 
+const ADAPTER_CATEGORIES = [
+  "bureau", "kyc", "gst", "payment", "fraud", "notification", "open_banking", "custom",
+];
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "8px 12px", fontSize: 13,
+  borderRadius: 6, border: "1px solid var(--color-border-strong)",
+  background: "var(--color-bg-base)", color: "var(--color-text-primary)",
+  outline: "none",
+};
+
+function CreateAdapterPanel({ onCreated }: { onCreated: () => void }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [documentId, setDocumentId] = useState("");
+  const [adapterName, setAdapterName] = useState("");
+  const [category, setCategory] = useState("custom");
+
+  const { data: docsData } = useQuery({ queryKey: ["documents"], queryFn: () => documentsApi.list() });
+  const docs: Document[] = (docsData?.data ?? []).filter((d: Document) => d.status === "parsed");
+
+  const createMutation = useMutation({
+    mutationFn: () => adaptersApi.createFromDocument(documentId, adapterName.trim(), category),
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+      const endpointCount = resp.data?.versions[0]?.endpoints.length ?? 0;
+      toast(`Adapter "${adapterName}" created with ${endpointCount} endpoint${endpointCount !== 1 ? "s" : ""}.`, "success");
+      setDocumentId("");
+      setAdapterName("");
+      setCategory("custom");
+      onCreated();
+    },
+    onError: () => { toast("Failed to create adapter.", "error"); },
+  });
+
+  return (
+    <div className="card" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Plus style={{ width: 16, height: 16, color: "var(--color-brand-light)" }} />
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-primary)" }}>Create Adapter from Parsed Document</span>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--color-text-muted)", margin: 0 }}>
+        Select a parsed document and we will extract its endpoints to create a new adapter.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+            Source Document
+          </label>
+          <select value={documentId} onChange={(e) => setDocumentId(e.target.value)} style={inputStyle}>
+            <option value="">Select document...</option>
+            {docs.map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+            Adapter Name
+          </label>
+          <input type="text" value={adapterName} onChange={(e) => setAdapterName(e.target.value)} placeholder="e.g. UPI Payment Gateway" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+            Category
+          </label>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
+            {ADAPTER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ fontSize: 12, padding: "6px 16px" }}
+          disabled={!documentId || !adapterName.trim() || createMutation.isPending}
+          onClick={() => createMutation.mutate()}
+        >
+          {createMutation.isPending
+            ? <><Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} /> Creating...</>
+            : <><Plus style={{ width: 13, height: 13 }} /> Create Adapter</>
+          }
+        </button>
+      </div>
+      <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+    </div>
+  );
+}
+
 export default function Adapters() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [categoryFilter, setCategoryFilter] = useState("");
   const [selected, setSelected] = useState<Adapter | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["adapters", categoryFilter],
     queryFn: () => adaptersApi.list(categoryFilter || undefined),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => adaptersApi.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["adapters"] });
+      toast("Adapter deleted.", "success");
+    },
+    onError: () => { toast("Failed to delete adapter.", "error"); },
   });
 
   const adapters: Adapter[] = data?.data?.adapters ?? [];
@@ -826,19 +1083,32 @@ export default function Adapters() {
             Integration connectors and data sources
           </p>
         </div>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={() => refetch()}
-          aria-label="Refresh adapters"
-        >
-          <RefreshCw
-            size={14}
-            style={{ animation: isFetching ? "spin 1s linear infinite" : undefined }}
-          />
-          Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            <Plus size={14} />
+            {showCreate ? "Hide" : "Create Adapter"}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => refetch()}
+            aria-label="Refresh adapters"
+          >
+            <RefreshCw
+              size={14}
+              style={{ animation: isFetching ? "spin 1s linear infinite" : undefined }}
+            />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {/* Create adapter panel */}
+      {showCreate && <CreateAdapterPanel onCreated={() => { setShowCreate(false); refetch(); }} />}
 
       {/* Category filter bar */}
       <fieldset
@@ -968,7 +1238,16 @@ export default function Adapters() {
           }}
         >
           {adapters.map((adapter) => (
-            <AdapterCard key={adapter.id} adapter={adapter} onClick={() => setSelected(adapter)} />
+            <AdapterCard
+              key={adapter.id}
+              adapter={adapter}
+              onClick={() => setSelected(adapter)}
+              onDelete={() => {
+                if (window.confirm(`Delete adapter "${adapter.name}"? This cannot be undone.`)) {
+                  deleteMutation.mutate(adapter.id);
+                }
+              }}
+            />
           ))}
         </div>
       )}

@@ -31,8 +31,9 @@ import {
   Sparkles,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ── Adapter categories for "create from document" form ───────────────────────
 const ADAPTER_CATEGORIES = [
@@ -40,27 +41,50 @@ const ADAPTER_CATEGORIES = [
 ] as const;
 
 // ── Match score helper (client-side, mirrors backend logic) ──────────────────
-function computeAdapterMatchScore(
+// Words too generic to count as a domain match
+const _STOP_WORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "are", "was", "will",
+  "can", "has", "have", "not", "all", "but", "its", "our", "any", "may",
+  "use", "used", "using", "into", "also", "each", "more", "than", "been",
+  "based", "data", "service", "services", "system", "integration", "status",
+  "type", "request", "response", "real", "time", "management", "processing",
+  "configuration", "engine", "provider", "platform", "api", "via", "check",
+  "report", "score", "assessment", "delivery", "template", "regulated",
+]);
+
+function findBestAdapterMatch(
   parsedResult: Record<string, unknown>,
   adapters: Adapter[]
-): number {
-  const endpoints = (parsedResult.endpoints as Array<{ path: string }> | undefined) ?? [];
-  const docEndpoints = new Set(endpoints.map((e) => e.path));
+): { score: number; adapterId: string | null } {
+  const title = ((parsedResult.title as string) ?? "").toLowerCase();
+  const summary = ((parsedResult.summary as string) ?? "").toLowerCase();
+  const services = ((parsedResult.services_identified as string[]) ?? []).join(" ").toLowerCase();
+  const docText = `${title} ${summary} ${services}`;
 
-  let best = 0;
+  let bestScore = 0;
+  let bestId: string | null = null;
+
   for (const adapter of adapters) {
-    for (const av of adapter.versions) {
-      const avEndpoints = new Set(av.endpoints.map((e) => e.path));
-      const endpointUnion = new Set([...docEndpoints, ...avEndpoints]);
-      const endpointIntersect = [...docEndpoints].filter((p) => avEndpoints.has(p)).length;
-      const endpointScore = endpointUnion.size > 0 ? endpointIntersect / endpointUnion.size : 0;
+    // Extract domain-specific keywords from adapter NAME (most important signal)
+    const nameTokens = adapter.name.toLowerCase().split(/[\s_\-/.,;:()]+/).filter(
+      (t) => t.length > 2 && !_STOP_WORDS.has(t)
+    );
 
-      // field overlap not easily computed client-side (request_schema not exposed), use 0
-      const score = endpointScore * 0.6;
-      if (score > best) best = score;
+    if (nameTokens.length === 0) continue;
+
+    // Check how many name keywords appear in the document title/summary/services
+    let nameHits = 0;
+    for (const token of nameTokens) {
+      if (docText.includes(token)) nameHits++;
+    }
+    // Require at least half of the adapter name keywords to match
+    const score = nameHits / nameTokens.length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = adapter.id;
     }
   }
-  return best;
+  return { score: bestScore, adapterId: bestId };
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -869,21 +893,13 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
     enabled: !!documentId,
   });
 
-  // Compute match score when document detail loads
+  // Reset adapter state when document changes
   useEffect(() => {
     if (!documentId) {
       setNoMatchBanner(false);
       setShowCreateAdapter(false);
-      return;
     }
-    const parsed = docDetailData?.data?.parsed_result;
-    if (!parsed || adapters.length === 0) return;
-    const score = computeAdapterMatchScore(parsed as Record<string, unknown>, adapters);
-    setNoMatchBanner(score < 0.30);
-    if (score >= 0.30) {
-      setShowCreateAdapter(false);
-    }
-  }, [documentId, docDetailData, adapters]);
+  }, [documentId]);
 
   const generateMutation = useMutation({
     mutationFn: configurationsApi.generate,
@@ -954,29 +970,17 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
 
       <TemplatesSection onSelect={(tplName) => setName(tplName)} />
 
-      {/* No-match banner */}
-      {noMatchBanner && !showCreateAdapter && (
-        <div
-          className="animate-fade-in"
-          style={{
-            display: "flex", alignItems: "center", gap: 12,
-            marginTop: 16, padding: "12px 16px",
-            borderRadius: 8, border: "1px solid rgba(217,119,6,0.35)",
-            background: "rgba(217,119,6,0.06)",
-          }}
-        >
-          <AlertCircle style={{ width: 15, height: 15, color: "var(--color-warning-text)", flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, color: "var(--color-warning-text)" }}>
-            No matching adapter found for this document.
-          </span>
+      {/* Create adapter form toggle — always available */}
+      {!showCreateAdapter && documentId && (
+        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
           <button
             type="button"
-            className="btn-primary"
-            style={{ fontSize: 12, padding: "5px 12px", flexShrink: 0 }}
+            className="btn-secondary"
+            style={{ fontSize: 12, padding: "5px 12px" }}
             onClick={() => setShowCreateAdapter(true)}
           >
             <Plus style={{ width: 13, height: 13 }} />
-            Create New Adapter
+            Create New Adapter from Document
           </button>
         </div>
       )}
@@ -1452,6 +1456,93 @@ export default function Configurations() {
     },
   });
 
+  type HealthVerdict = "ok" | "auth_required" | "not_found" | "client_error" | "server_error" | "unreachable";
+  type ProbeSource = "document" | "adapter";
+  type ConnectivityResult = {
+    target_url: string;
+    label: string;
+    request_method: string;
+    configured_method: string;
+    reachable: boolean;
+    health: HealthVerdict;
+    status_code: number | null;
+    status_text: string;
+    latency_ms: number | null;
+    error: string | null;
+    source: ProbeSource;
+    source_label: string;
+  };
+  type ConnectivityMeta = {
+    document_filename: string | null;
+    document_base_url: string | null;
+    adapter_base_url: string | null;
+    primary_base_url: string;
+    adapter_name: string | null;
+    adapter_version: string | null;
+  };
+  type ConnectivityDone = {
+    healthy_count: number;
+    reachable_count: number;
+    total_count: number;
+    all_healthy: boolean;
+    all_reachable: boolean;
+    summary: string;
+  };
+  type ConnectivityState = {
+    configId: string;
+    startedAt: number;
+    total: number;          // 0 until 'start' arrives
+    meta: ConnectivityMeta | null;
+    sourceCounts: { document: number; adapter: number };
+    results: ConnectivityResult[];
+    done: ConnectivityDone | null;
+    error: string | null;
+  };
+  const [connectivityResult, setConnectivityResult] = useState<ConnectivityState | null>(null);
+  const connectivityAbortRef = useRef<AbortController | null>(null);
+  const connectivityInProgress = connectivityResult !== null && connectivityResult.done === null && connectivityResult.error === null;
+
+  const runConnectivityCheck = (configId: string) => {
+    // Cancel any in-flight check.
+    connectivityAbortRef.current?.abort();
+    const controller = new AbortController();
+    connectivityAbortRef.current = controller;
+
+    const initial: ConnectivityState = {
+      configId, startedAt: Date.now(), total: 0,
+      meta: null, sourceCounts: { document: 0, adapter: 0 },
+      results: [], done: null, error: null,
+    };
+    setConnectivityResult(initial);
+
+    configurationsApi.connectivityCheckStream(configId, (event) => {
+      setConnectivityResult((prev) => {
+        if (!prev || prev.configId !== configId) return prev;
+        if (event.type === "start") {
+          return {
+            ...prev,
+            total: Number(event.total) || 0,
+            meta: (event.meta as ConnectivityMeta) ?? null,
+            sourceCounts: (event.source_counts as { document: number; adapter: number }) ?? prev.sourceCounts,
+          };
+        }
+        if (event.type === "probe") {
+          return { ...prev, results: [...prev.results, event.data as ConnectivityResult] };
+        }
+        if (event.type === "done") {
+          const done = event as unknown as ConnectivityDone;
+          toast(`Connectivity: ${done.summary}`, done.all_healthy ? "success" : "error");
+          return { ...prev, done };
+        }
+        return prev;
+      });
+    }, controller.signal).catch((err) => {
+      if (controller.signal.aborted) return;
+      setConnectivityResult((prev) => prev && prev.configId === configId ? { ...prev, error: err?.message || "Stream failed" } : prev);
+      toast("Connectivity check failed.", "error");
+    });
+  };
+
   const configs: Configuration[] = data?.data ?? [];
 
   return (
@@ -1588,6 +1679,20 @@ export default function Configurations() {
                     <button
                       type="button"
                       className="btn-secondary"
+                      style={{ fontSize: 11, padding: "5px 10px" }}
+                      disabled={connectivityInProgress && connectivityResult?.configId === cfg.id}
+                      onClick={() => runConnectivityCheck(cfg.id)}
+                    >
+                      {connectivityInProgress && connectivityResult?.configId === cfg.id ? (
+                        <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                      ) : (
+                        <Zap style={{ width: 12, height: 12 }} />
+                      )}
+                      Live Check
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
                       style={{ fontSize: 11, padding: "5px 8px", color: "var(--color-error-text)" }}
                       onClick={() => setConfirmDelete(cfg)}
                       aria-label={`Delete ${cfg.name}`}
@@ -1608,6 +1713,237 @@ export default function Configurations() {
                     <ValidationPipelinePanel ui={pipeline} onClose={() => setPipeline(null)} />
                   </div>
                 )}
+
+                {/* Live connectivity check results — streamed NDJSON, probes appear as they complete */}
+                {connectivityResult && connectivityResult.configId === cfg.id && (() => {
+                  const state = connectivityResult;
+                  const meta = state.meta;
+                  const done = state.done;
+                  const inProgress = !done && !state.error;
+                  const verdictMeta: Record<HealthVerdict, { color: string; bg: string; label: string }> = {
+                    ok:             { color: "#22c55e", bg: "rgba(34,197,94,0.08)",  label: "OK" },
+                    auth_required:  { color: "#3b82f6", bg: "rgba(59,130,246,0.08)", label: "Auth required" },
+                    not_found:      { color: "#fbbf24", bg: "rgba(251,191,36,0.10)", label: "Not found" },
+                    client_error:   { color: "#fbbf24", bg: "rgba(251,191,36,0.10)", label: "Client error" },
+                    server_error:   { color: "#f97316", bg: "rgba(249,115,22,0.10)", label: "Server error" },
+                    unreachable:    { color: "#ef4444", bg: "rgba(239,68,68,0.10)",  label: "Unreachable" },
+                  };
+                  const sourceMeta: Record<ProbeSource, { color: string; bg: string; label: string }> = {
+                    document: { color: "#8b5cf6", bg: "rgba(139,92,246,0.12)", label: "from document" },
+                    adapter:  { color: "#0ea5e9", bg: "rgba(14,165,233,0.12)", label: "from adapter" },
+                  };
+                  // Group by source while preserving stream arrival order.
+                  const grouped: { source: ProbeSource; rows: ConnectivityResult[] }[] = [];
+                  for (const r of state.results) {
+                    const last = grouped[grouped.length - 1];
+                    if (last && last.source === r.source) last.rows.push(r);
+                    else grouped.push({ source: r.source, rows: [r] });
+                  }
+                  const completedCount = state.results.length;
+                  const totalCount = state.total || done?.total_count || completedCount;
+                  const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+                  // Treat the check as a pass when at least half the targets are healthy.
+                  // Below 50% stays red — the integration is mostly broken.
+                  const healthyRatio = done && done.total_count > 0
+                    ? done.healthy_count / done.total_count
+                    : 0;
+                  const mostlyHealthy = !!done && healthyRatio >= 0.5;
+                  const headerColor = state.error
+                    ? "var(--color-error)"
+                    : inProgress
+                    ? "var(--color-brand-light)"
+                    : mostlyHealthy
+                    ? "var(--color-success-text)"
+                    : "var(--color-error)";
+                  const headerText = state.error
+                    ? `Stream failed — ${state.error}`
+                    : inProgress
+                    ? totalCount > 0
+                      ? `Probing ${completedCount} of ${totalCount}…`
+                      : "Starting live check…"
+                    : `Live Connectivity — ${done?.summary ?? ""}`;
+                  return (
+                    <div style={{ padding: "12px 18px", borderTop: "1px solid var(--color-border)" }}>
+                      <div style={{
+                        padding: 16, borderRadius: 10,
+                        border: `1px solid ${headerColor}`,
+                        background: "var(--color-surface-2)",
+                        transition: "border-color 200ms ease",
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {inProgress ? (
+                              <Loader2 style={{ width: 15, height: 15, color: headerColor, animation: "spin 1s linear infinite" }} />
+                            ) : (
+                              <Zap style={{ width: 15, height: 15, color: headerColor }} />
+                            )}
+                            <span style={{ fontSize: 13, fontWeight: 700, color: headerColor }}>
+                              {headerText}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ fontSize: 11, padding: "4px 10px" }}
+                            onClick={() => {
+                              connectivityAbortRef.current?.abort();
+                              setConnectivityResult(null);
+                            }}
+                          >
+                            {inProgress ? "Cancel" : "Dismiss"}
+                          </button>
+                        </div>
+                        {/* Live progress bar — fills as probes complete */}
+                        {totalCount > 0 && (
+                          <div style={{
+                            height: 3, borderRadius: 2, background: "var(--color-border)",
+                            marginTop: 8, marginBottom: 8, overflow: "hidden",
+                          }}>
+                            <div style={{
+                              height: "100%", width: `${progressPct}%`,
+                              background: inProgress ? "var(--color-brand-light)" : headerColor,
+                              transition: "width 250ms ease",
+                            }} />
+                          </div>
+                        )}
+                        {/* Source context */}
+                        {meta && (
+                          <div style={{
+                            fontSize: 11, color: "var(--color-text-muted)", marginTop: 6, marginBottom: 4,
+                            display: "flex", flexWrap: "wrap", gap: "4px 12px", fontFamily: "monospace",
+                          }}>
+                            {meta.document_filename && (
+                              <span><strong style={{ color: sourceMeta.document.color }}>document:</strong> {meta.document_filename}</span>
+                            )}
+                            {meta.adapter_name && (
+                              <span><strong style={{ color: sourceMeta.adapter.color }}>adapter:</strong> {meta.adapter_name}{meta.adapter_version ? ` ${meta.adapter_version}` : ""}{meta.adapter_base_url ? ` (${meta.adapter_base_url})` : ""}</span>
+                            )}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12, fontFamily: "monospace" }}>
+                          {totalCount > 0 ? `${completedCount}/${totalCount} probed` : "resolving targets…"}
+                          {" · ran at "}{new Date(state.startedAt).toLocaleTimeString()}
+                          {state.sourceCounts.document + state.sourceCounts.adapter > 0 && (
+                            <>
+                              {" · "}<span style={{ color: sourceMeta.document.color }}>{state.sourceCounts.document} from document</span>
+                              {" · "}<span style={{ color: sourceMeta.adapter.color }}>{state.sourceCounts.adapter} from adapter</span>
+                            </>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                          {grouped.map((group, gi) => {
+                            const s = sourceMeta[group.source];
+                            return (
+                              <div key={gi} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <div style={{
+                                  display: "flex", alignItems: "center", gap: 8, fontSize: 10,
+                                  textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 700,
+                                  color: s.color,
+                                }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.color }} />
+                                  {s.label}
+                                  <span style={{ fontWeight: 400, color: "var(--color-text-muted)", textTransform: "none", letterSpacing: 0 }}>
+                                    ({group.rows[0].source_label})
+                                  </span>
+                                </div>
+                                {group.rows.map((r, i) => {
+                                  const v = verdictMeta[r.health];
+                                  const methodFellBack = r.reachable && r.request_method !== r.configured_method && r.configured_method !== "HEAD";
+                                  return (
+                                    <div
+                                      key={`${r.target_url}-${i}`}
+                                      style={{
+                                        display: "flex", flexDirection: "column", gap: 4,
+                                        padding: "8px 10px", borderRadius: 6, background: v.bg,
+                                        borderLeft: `3px solid ${v.color}`,
+                                        animation: "probe-in 220ms ease-out",
+                                      }}
+                                    >
+                                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: v.color, flexShrink: 0 }} />
+                                        <span style={{ flex: 1, fontWeight: 600, color: "var(--color-text-primary)" }}>
+                                          {r.label}
+                                        </span>
+                                        <span style={{
+                                          fontSize: 9, fontWeight: 700, padding: "2px 5px", borderRadius: 3,
+                                          background: s.bg, color: s.color, textTransform: "uppercase", letterSpacing: 0.3,
+                                          border: `1px solid ${s.color}`,
+                                        }}>
+                                          {s.label}
+                                        </span>
+                                        <span style={{
+                                          fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                                          background: v.color, color: "white", textTransform: "uppercase", letterSpacing: 0.3,
+                                        }}>
+                                          {v.label}
+                                        </span>
+                                      </div>
+                                      <div style={{
+                                        display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+                                        color: "var(--color-text-muted)", fontFamily: "monospace",
+                                        paddingLeft: 16, flexWrap: "wrap",
+                                      }}>
+                                        <span style={{ fontWeight: 700, color: "var(--color-text-secondary)" }}>{r.request_method}</span>
+                                        <span style={{ wordBreak: "break-all", color: "var(--color-text-secondary)" }}>{r.target_url}</span>
+                                        {methodFellBack && (
+                                          <span style={{ color: "var(--color-text-muted)", fontSize: 10 }}>
+                                            (configured: {r.configured_method}, fell back to {r.request_method})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingLeft: 16, fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace" }}>
+                                        {r.status_code !== null ? (
+                                          <span>
+                                            → <strong style={{ color: v.color }}>{r.status_code}</strong>
+                                            {r.status_text ? ` ${r.status_text}` : ""}
+                                          </span>
+                                        ) : (
+                                          <span style={{ color: "var(--color-error)" }}>→ no HTTP response</span>
+                                        )}
+                                        {r.latency_ms !== null && <span>· {r.latency_ms}ms</span>}
+                                        {r.error && (
+                                          <span style={{ color: "var(--color-error)", flex: 1 }}>
+                                            · {r.error}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
+                          {/* Pending placeholder rows for probes not yet returned */}
+                          {inProgress && totalCount > completedCount && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {Array.from({ length: Math.min(totalCount - completedCount, 4) }).map((_, i) => (
+                                <div
+                                  key={`pending-${i}`}
+                                  style={{
+                                    height: 56, borderRadius: 6,
+                                    background: "linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.06), rgba(255,255,255,0.02))",
+                                    backgroundSize: "200% 100%",
+                                    animation: "probe-shimmer 1.4s ease-in-out infinite",
+                                    borderLeft: "3px solid var(--color-border-strong)",
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          {inProgress && totalCount === 0 && (
+                            <div style={{
+                              padding: "12px 10px", fontSize: 12, color: "var(--color-text-muted)",
+                              display: "flex", alignItems: "center", gap: 8,
+                            }}>
+                              <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+                              Resolving probe targets from document and adapter…
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Simulation results after transitioning to testing */}
                 {lastSimResult && lastSimResult.configId === cfg.id && (

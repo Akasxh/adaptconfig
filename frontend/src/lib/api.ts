@@ -25,7 +25,7 @@ import type { AuthUser } from "./auth";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "",
-  timeout: 30_000,
+  timeout: 120_000,
   headers: {
     "Content-Type": "application/json",
     "X-Tenant-ID": "default",
@@ -151,6 +151,17 @@ export const adaptersApi = {
         params: { document_id: documentId, name, category },
       })
       .then((r) => r.data),
+  delete: (id: string) =>
+    api
+      .delete<APIResponse<{ id: string; deleted: boolean }>>(`/api/v1/adapters/${id}`)
+      .then((r) => r.data),
+  patchVersion: (adapterId: string, versionId: string, patch: { base_url?: string }) =>
+    api
+      .patch<APIResponse<unknown>>(
+        `/api/v1/adapters/${adapterId}/versions/${versionId}`,
+        patch,
+      )
+      .then((r) => r.data),
 };
 
 export const documentsApi = {
@@ -191,6 +202,41 @@ export const configurationsApi = {
     api
       .post<APIResponse<ConfigValidationResult>>(`/api/v1/configurations/${id}/validate`)
       .then((r) => r.data),
+  // Streams NDJSON events from POST /connectivity-check. Each line is one event:
+  //   {type:"start", total, meta, source_counts, base_url}
+  //   {type:"probe", data:{...}}            (one per probe, arriving live)
+  //   {type:"done",  healthy_count, reachable_count, total_count, summary, ...}
+  // Caller passes onEvent to receive each chunk as it arrives.
+  connectivityCheckStream: async (
+    id: string,
+    onEvent: (event: { type: "start" | "probe" | "done" } & Record<string, unknown>) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const baseURL = api.defaults.baseURL || "";
+    const resp = await fetch(`${baseURL}/api/v1/configurations/${id}/connectivity-check`, {
+      method: "POST",
+      headers: { "Accept": "application/x-ndjson" },
+      signal,
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`Connectivity check failed: HTTP ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line) onEvent(JSON.parse(line));
+      }
+    }
+    if (buffer.trim()) onEvent(JSON.parse(buffer));
+  },
   transition: (id: string, targetState: string, reason?: string) =>
     api
       .post<

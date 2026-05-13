@@ -42,6 +42,7 @@ class ParsedDocumentResult(BaseModel):
     title: str = ""
     summary: str = ""
     services_identified: list[str] = []
+    base_url: str = ""  # Real API base URL (e.g., https://api.example.com/v1) when extractable.
     endpoints: list[ExtractedEndpoint] = []
     fields: list[ExtractedField] = []
     auth_requirements: list[ExtractedAuth] = []
