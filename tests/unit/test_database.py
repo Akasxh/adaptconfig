@@ -10,7 +10,6 @@ The setup_database autouse fixture from the root conftest is overridden with a
 no-op to avoid interference.
 """
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -80,7 +79,7 @@ class TestInitDb:
             await init_db()
 
             # Inspect the live database to confirm the tables were created.
-            from sqlalchemy import inspect, text
+            from sqlalchemy import inspect
 
             async with engine.connect() as conn:
                 table_names = await conn.run_sync(

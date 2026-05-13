@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -9,16 +10,17 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import logging
-
-from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
+from finspark.api.dependencies import (
+    get_audit_service,
+    get_simulator,
+    get_tenant_context,
+    require_role,
+)
 from finspark.core import events
-from finspark.core.config import settings
-from finspark.core.json_utils import safe_json_loads
 from finspark.core.audit import AuditService
+from finspark.core.config import settings
 from finspark.core.database import async_session_factory, get_db
-
-logger = logging.getLogger(__name__)
+from finspark.core.json_utils import safe_json_loads
 from finspark.models.configuration import Configuration
 from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, TenantContext
@@ -27,10 +29,23 @@ from finspark.schemas.simulations import (
     SimulationResponse,
     SimulationStepResult,
 )
+from finspark.services.chain import ChainCycleError, ChainExecutor
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
+
+
+def _llm_validation_enabled(*, is_chain_config: bool) -> bool:
+    """Return whether simulation should attempt the configured LLM validator."""
+    if is_chain_config or not settings.ai_enabled:
+        return False
+    provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(settings, "openai_api_key", ""))
+    return bool(getattr(settings, "gemini_api_key", ""))
 
 
 @router.get("/", response_model=APIResponse[list[SimulationResponse]])
@@ -71,53 +86,67 @@ async def list_simulations(
     return APIResponse(success=True, data=data, message="")
 
 
-@router.post("/run", response_model=APIResponse[SimulationResponse])
-async def run_simulation(
-    request: RunSimulationRequest,
+async def run_simulation_for_config(
+    *,
+    db: AsyncSession,
+    tenant: TenantContext,
+    simulator: IntegrationSimulator,
+    audit: AuditService,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = require_role("admin", "editor"),
-    simulator: IntegrationSimulator = Depends(get_simulator),
-    audit: AuditService = Depends(get_audit_service),
-) -> APIResponse[SimulationResponse]:
-    """Run a simulation/test against a configuration."""
-    # Fetch configuration
-    stmt = select(Configuration).where(
-        Configuration.id == request.configuration_id,
-        Configuration.tenant_id == tenant.tenant_id,
-    )
-    result = await db.execute(stmt)
-    config = result.scalar_one_or_none()
-    if not config or not config.full_config:
-        raise HTTPException(status_code=404, detail="Configuration not found")
+    config: Configuration,
+    test_type: str,
+) -> SimulationResponse:
+    """Run a single simulation against an already-fetched Configuration and
+    persist the resulting Simulation + SimulationStep rows.
 
+    Does not mutate ``config.status`` — callers control lifecycle so this
+    helper can be composed by higher-level pipelines (see
+    ``/api/v1/configurations/{id}/validate-and-test``).
+
+    Reuses the LLM-or-fallback selection the standalone ``/simulations/run``
+    handler has always used: when AI is enabled, ``validate_config_llm`` is
+    attempted via ``get_llm_client()`` (OpenAI when ``FINSPARK_LLM_PROVIDER``
+    is ``openai``); rule-based ``run_simulation`` is used otherwise.
+    """
     full_config = safe_json_loads(config.full_config, {})
 
-    # Create simulation record
     simulation = Simulation(
         tenant_id=tenant.tenant_id,
-        configuration_id=request.configuration_id,
+        configuration_id=config.id,
         status="running",
-        test_type=request.test_type,
+        test_type=test_type,
     )
     db.add(simulation)
     await db.flush()
 
-    # Run simulation — use LLM-powered validation when AI is enabled
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
-    if use_llm:
-        try:
-            from finspark.services.llm.client import get_llm_client
+    # Chain configs go through the rule-based simulator so the chain executor
+    # actually runs. The LLM validator returns a static 7-dimension analysis
+    # and would not exercise extract/inject, so we skip it for chain configs.
+    chain_endpoints = full_config.get("endpoints", []) if isinstance(full_config, dict) else []
+    is_chain_config = ChainExecutor.is_chain(chain_endpoints)
 
-            llm_client = get_llm_client()
-            steps = await simulator.validate_config_llm(full_config, llm_client)
-        except Exception:
-            logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
-            steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
-    else:
-        steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
+    use_llm = _llm_validation_enabled(is_chain_config=is_chain_config)
+    try:
+        if use_llm:
+            try:
+                from finspark.services.llm.client import get_llm_client
 
-    # Save results
+                llm_client = get_llm_client()
+                steps = await simulator.validate_config_llm(full_config, llm_client)
+            except Exception:
+                logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
+                steps = await asyncio.to_thread(
+                    simulator.run_simulation, full_config, test_type=test_type
+                )
+        else:
+            steps = await asyncio.to_thread(
+                simulator.run_simulation, full_config, test_type=test_type
+            )
+    except ChainCycleError as exc:
+        await db.delete(simulation)
+        await db.flush()
+        raise HTTPException(status_code=400, detail=f"Invalid endpoint chain: {exc}") from exc
+
     total = len(steps)
     passed = sum(1 for s in steps if s.status == "passed")
     failed = total - passed
@@ -130,7 +159,6 @@ async def run_simulation(
     simulation.duration_ms = total_duration
     simulation.results = json.dumps([s.model_dump() for s in steps])
 
-    # Save individual steps
     for i, step in enumerate(steps):
         sim_step = SimulationStep(
             simulation_id=simulation.id,
@@ -146,9 +174,6 @@ async def run_simulation(
         )
         db.add(sim_step)
 
-    # Update config status
-    config.status = "testing" if simulation.status == "passed" else "configured"
-
     await audit.log(
         tenant_id=tenant.tenant_id,
         actor=tenant.tenant_name,
@@ -156,7 +181,7 @@ async def run_simulation(
         resource_type="simulation",
         resource_id=simulation.id,
         details={
-            "config_id": request.configuration_id,
+            "config_id": config.id,
             "status": simulation.status,
             "passed": passed,
             "failed": failed,
@@ -166,7 +191,7 @@ async def run_simulation(
     sim_event_data = {
         "tenant_id": tenant.tenant_id,
         "simulation_id": simulation.id,
-        "configuration_id": request.configuration_id,
+        "configuration_id": config.id,
         "status": simulation.status,
         "total_tests": total,
         "passed_tests": passed,
@@ -175,25 +200,61 @@ async def run_simulation(
     await events.emit(events.SIMULATION_COMPLETED, sim_event_data)
     background_tasks.add_task(deliver_event, tenant.tenant_id, events.SIMULATION_COMPLETED, sim_event_data)
 
-    # Granular pass/fail events for webhook subscribers
     specific_event = events.SIMULATION_PASSED if simulation.status == "passed" else events.SIMULATION_FAILED
     await events.emit(specific_event, sim_event_data)
     background_tasks.add_task(deliver_event, tenant.tenant_id, specific_event, sim_event_data)
 
+    return SimulationResponse(
+        id=simulation.id,
+        configuration_id=simulation.configuration_id,
+        status=simulation.status,
+        test_type=simulation.test_type,
+        total_tests=total,
+        passed_tests=passed,
+        failed_tests=failed,
+        duration_ms=total_duration,
+        steps=steps,
+        created_at=simulation.created_at,
+    )
+
+
+@router.post("/run", response_model=APIResponse[SimulationResponse])
+async def run_simulation(
+    request: RunSimulationRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = require_role("admin", "editor"),
+    simulator: IntegrationSimulator = Depends(get_simulator),
+    audit: AuditService = Depends(get_audit_service),
+) -> APIResponse[SimulationResponse]:
+    """Run a simulation/test against a configuration."""
+    stmt = select(Configuration).where(
+        Configuration.id == request.configuration_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config or not config.full_config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    sim_response = await run_simulation_for_config(
+        db=db,
+        tenant=tenant,
+        simulator=simulator,
+        audit=audit,
+        background_tasks=background_tasks,
+        config=config,
+        test_type=request.test_type,
+    )
+
+    # Historical side-effect of /simulations/run: auto-advance the config to
+    # "testing" when the smoke run passes. Preserved so existing UI flows that
+    # call /simulations/run directly continue to behave the same.
+    config.status = "testing" if sim_response.status == "passed" else "configured"
+
     return APIResponse(
-        data=SimulationResponse(
-            id=simulation.id,
-            configuration_id=simulation.configuration_id,
-            status=simulation.status,
-            test_type=simulation.test_type,
-            total_tests=total,
-            passed_tests=passed,
-            failed_tests=failed,
-            duration_ms=total_duration,
-            steps=steps,
-            created_at=simulation.created_at,
-        ),
-        message=f"Simulation {simulation.status}: {passed}/{total} tests passed",
+        data=sim_response,
+        message=f"Simulation {sim_response.status}: {sim_response.passed_tests}/{sim_response.total_tests} tests passed",
     )
 
 

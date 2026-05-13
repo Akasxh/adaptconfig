@@ -4,8 +4,8 @@ import pytest
 
 from finspark.core.rate_limiter import (
     MetricsCollector,
-    _TokenBucket,
     _normalize_path,
+    _TokenBucket,
 )
 
 

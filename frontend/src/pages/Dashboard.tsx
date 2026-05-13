@@ -234,6 +234,7 @@ function ConfigSummaryCard({ summary }: { summary: ConfigSummaryResponse }) {
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: dashboard composes several independent summary panels
 export default function Dashboard() {
   const adaptersQ = useQuery({ queryKey: ["adapters"], queryFn: () => adaptersApi.list() });
   const documentsQ = useQuery({ queryKey: ["documents"], queryFn: () => documentsApi.list() });

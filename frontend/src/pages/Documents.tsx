@@ -1,10 +1,11 @@
 import { useToast } from "@/components/Toast";
-import { documentsApi } from "@/lib/api";
-import type { Document } from "@/types";
+import { adaptersApi, documentsApi } from "@/lib/api";
+import type { AdapterSuggestMatch, AdapterSuggestResponse, Document } from "@/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   FileCode,
+  FilePlus2,
   FileSpreadsheet,
   FileText,
   Layers,
@@ -12,8 +13,10 @@ import {
   Loader2,
   Search,
   Shield,
+  Sparkles,
   Trash2,
   Upload,
+  Wand2,
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -246,7 +249,7 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
               </p>
             </div>
           ) : tab === "summary" ? (
-            <SummaryTab parsed={parsed} />
+            <SummaryTab parsed={parsed} documentId={doc.id} filename={doc.filename} />
           ) : tab === "endpoints" ? (
             parsed.endpoints && parsed.endpoints.length > 0 ? (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8125rem" }}>
@@ -340,7 +343,185 @@ function DetailModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
   );
 }
 
-function SummaryTab({ parsed }: { parsed: ParsedResult }) {
+function SuggestAdapterPanel({ documentId, filename }: { documentId: string; filename: string }) {
+  const { toast } = useToast();
+  const [data, setData] = useState<AdapterSuggestResponse | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const suggestMutation = useMutation({
+    mutationFn: () => adaptersApi.suggest(documentId),
+    onSuccess: (resp) => {
+      setData(resp.data ?? null);
+      if (!resp.data || resp.data.matches.length === 0) {
+        toast("No matching adapters — create a custom one.", "warning");
+      }
+    },
+    onError: () => {
+      toast("Suggestion failed. Please retry.", "error");
+    },
+  });
+
+  const goGenerateConfig = (match: AdapterSuggestMatch) => {
+    const params = new URLSearchParams({
+      document_id: documentId,
+      adapter_version_id: match.version_id,
+      adapter_id: match.adapter_id,
+      name: `${match.adapter_name} integration`,
+    });
+    window.location.href = `/configurations?${params.toString()}`;
+  };
+
+  const createCustomAdapter = async () => {
+    setCreating(true);
+    try {
+      const baseName = filename.replace(/\.[^/.]+$/, "");
+      const resp = await adaptersApi.createFromDocument(documentId, baseName, "custom");
+      const adapter = resp.data;
+      toast(`Custom adapter "${adapter?.name ?? baseName}" created.`, "success");
+      const versionId = adapter?.versions?.[0]?.id;
+      if (versionId) {
+        const params = new URLSearchParams({
+          document_id: documentId,
+          adapter_version_id: versionId,
+          adapter_id: adapter?.id ?? "",
+          name: `${adapter?.name ?? baseName} integration`,
+        });
+        window.location.href = `/configurations?${params.toString()}`;
+      } else {
+        window.location.href = "/adapters";
+      }
+    } catch {
+      toast("Failed to create custom adapter.", "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const matches = data?.matches ?? [];
+  const suggestCustom = data?.suggest_custom ?? false;
+  const threshold = data?.threshold ?? 0.55;
+
+  return (
+    <div style={{ ...S.raised, padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <Sparkles style={{ width: 14, height: 14, ...S.brandText }} />
+        <span style={{ ...S.label, ...S.brandText }}>Adapter match</span>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+          onClick={() => suggestMutation.mutate()}
+          disabled={suggestMutation.isPending}
+          aria-label="Suggest adapter"
+        >
+          {suggestMutation.isPending ? (
+            <>
+              <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+              Ranking…
+            </>
+          ) : (
+            <>
+              <Wand2 style={{ width: 13, height: 13 }} />
+              {data ? "Re-suggest adapter" : "Suggest adapter"}
+            </>
+          )}
+        </button>
+      </div>
+
+      {suggestMutation.isError && (
+        <AlertBanner color="error" text="Could not rank adapters. Try again." />
+      )}
+
+      {data && matches.length === 0 && (
+        <p style={{ fontSize: "0.8125rem", ...S.textSecondary }}>
+          No catalogue adapter scored above the {Math.round(threshold * 100)}% threshold.
+        </p>
+      )}
+
+      {matches.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {matches.map((m, idx) => {
+            const pct = Math.round(m.score * 100);
+            const above = m.score >= threshold;
+            return (
+              <div
+                key={`${m.adapter_id}-${m.version_id}`}
+                style={{
+                  border: `1px solid ${above ? "var(--color-brand-subtle)" : "var(--color-border)"}`,
+                  background: above && idx === 0 ? "var(--color-brand-subtle)" : "var(--color-bg-elevated)",
+                  borderRadius: "0.5rem",
+                  padding: "0.75rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.5rem",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 600, ...S.textPrimary }}>
+                    {m.adapter_name}
+                  </span>
+                  <span className="badge-gray" style={{ ...S.mono }}>{m.version}</span>
+                  <span className="badge-teal" style={{ marginLeft: "auto" }}>{pct}%</span>
+                </div>
+                {m.reason && (
+                  <p style={{ fontSize: "0.75rem", ...S.textMuted, lineHeight: 1.5 }}>{m.reason}</p>
+                )}
+                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+                    onClick={() => goGenerateConfig(m)}
+                  >
+                    <FileCode style={{ width: 13, height: 13 }} />
+                    Generate config from this adapter
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {data && (suggestCustom || matches.length === 0) && (
+        <div
+          style={{
+            borderTop: "1px dashed var(--color-border)",
+            paddingTop: "0.75rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+          }}
+        >
+          <p style={{ fontSize: "0.8125rem", ...S.textSecondary }}>
+            None of the existing adapters look like a confident match.
+          </p>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+            onClick={createCustomAdapter}
+            disabled={creating}
+          >
+            {creating ? (
+              <>
+                <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+                Creating…
+              </>
+            ) : (
+              <>
+                <FilePlus2 style={{ width: 13, height: 13 }} />
+                Create custom adapter
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryTab({ parsed, documentId, filename }: { parsed: ParsedResult; documentId: string; filename: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       {parsed.title && (
@@ -384,6 +565,7 @@ function SummaryTab({ parsed }: { parsed: ParsedResult }) {
           ))}
         </div>
       )}
+      <SuggestAdapterPanel documentId={documentId} filename={filename} />
     </div>
   );
 }

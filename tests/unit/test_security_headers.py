@@ -5,7 +5,6 @@ from httpx import AsyncClient
 
 from finspark.core.config import Settings
 
-
 EXPECTED_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",

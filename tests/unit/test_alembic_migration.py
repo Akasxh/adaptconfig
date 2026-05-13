@@ -1,9 +1,6 @@
 """Tests for Alembic migration setup."""
 
-import os
 from pathlib import Path
-
-import pytest
 
 
 class TestAlembicSetup:

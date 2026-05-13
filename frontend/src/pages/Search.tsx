@@ -193,39 +193,45 @@ export default function Search() {
                 return (
                   <li
                     key={item.id}
-                    className="card-hover"
-                    onClick={() => navigate(getRoute(item))}
-                    role="link"
-                    tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === "Enter") navigate(getRoute(item)); }}
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 16,
-                      padding: "14px 20px",
-                      cursor: "pointer",
                       borderBottom: i < items.length - 1 ? "1px solid rgba(30,45,71,0.5)" : "none",
                     }}
                   >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: "#dde4f0" }}>{item.name}</span>
-                        <span style={badgeStyle(item.type)}>{item.type}</span>
+                    <button
+                      type="button"
+                      className="card-hover"
+                      onClick={() => navigate(getRoute(item))}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 16,
+                        width: "100%",
+                        padding: "14px 20px",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        background: "transparent",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "#dde4f0" }}>{item.name}</span>
+                          <span style={badgeStyle(item.type)}>{item.type}</span>
+                        </div>
+                        {desc && (
+                          <p style={{ fontSize: 12, color: "#5d7a99", margin: "4px 0 0", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                            {desc}
+                          </p>
+                        )}
                       </div>
-                      {desc && (
-                        <p style={{ fontSize: 12, color: "#5d7a99", margin: "4px 0 0", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                          {desc}
-                        </p>
-                      )}
-                    </div>
 
-                    {/* Relevance score */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }} aria-label={`Relevance: ${pct}%`}>
-                      <div style={{ width: 80, height: 4, background: "#18243a", borderRadius: 99, overflow: "hidden" }}>
-                        <div style={{ width: `${pct}%`, height: "100%", background: scoreColor(item.score), borderRadius: 99, transition: "width 0.3s" }} />
+                      {/* Relevance score */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }} aria-label={`Relevance: ${pct}%`}>
+                        <div style={{ width: 80, height: 4, background: "#18243a", borderRadius: 99, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: scoreColor(item.score), borderRadius: 99, transition: "width 0.3s" }} />
+                        </div>
+                        <span className="mono" style={{ fontSize: 11, color: "#5d7a99", width: 30, textAlign: "right" }}>{pct}%</span>
                       </div>
-                      <span className="mono" style={{ fontSize: 11, color: "#5d7a99", width: 30, textAlign: "right" }}>{pct}%</span>
-                    </div>
+                    </button>
                   </li>
                 );
               })}

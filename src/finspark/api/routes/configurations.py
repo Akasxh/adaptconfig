@@ -23,6 +23,7 @@ from finspark.api.dependencies import (
     get_tenant_context,
     require_role,
 )
+from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
@@ -34,6 +35,7 @@ from finspark.schemas.configurations import (
     BatchConfigRequest,
     BatchSimulationItem,
     BatchValidationItem,
+    ChainEndpointInfo,
     ConfigDiffResponse,
     ConfigHistoryEntry,
     ConfigSummaryResponse,
@@ -47,21 +49,85 @@ from finspark.schemas.configurations import (
     RollbackResponse,
     TransitionRequest,
     TransitionResponse,
+    ValidateAndTestResponse,
     VersionComparisonResponse,
 )
+from finspark.services.chain import is_chain
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
-from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
-from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
+from finspark.services.llm.client import GeminiAPIError, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
+from finspark.services.transformation import validate_expression
 from finspark.services.webhook_delivery import deliver_event
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
+
+
+def _llm_generation_enabled() -> bool:
+    """Return whether config generation should attempt the configured LLM provider."""
+    if not settings.ai_enabled:
+        return False
+    provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(settings, "openai_api_key", ""))
+    return bool(getattr(settings, "gemini_api_key", ""))
+
+
+def _chain_from_full_config(full_config_json: str | None) -> list[ChainEndpointInfo]:
+    """Surface chain-runtime metadata from the persisted ``full_config`` JSON.
+
+    Returns an empty list when the config has no endpoints, fewer than two
+    endpoints, or no ``depends_on`` links -- the chain panel only renders
+    once a config genuinely participates in the chain runtime.
+    """
+    if not full_config_json:
+        return []
+    try:
+        full_config = json.loads(full_config_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(full_config, dict):
+        return []
+    raw_endpoints = full_config.get("endpoints") or []
+    if not isinstance(raw_endpoints, list) or not is_chain(raw_endpoints):
+        return []
+
+    chain: list[ChainEndpointInfo] = []
+    for index, ep in enumerate(raw_endpoints):
+        if not isinstance(ep, dict):
+            continue
+        eid = str(ep.get("id") or f"step_{index}")
+        depends_on = ep.get("depends_on") or []
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+        elif not isinstance(depends_on, list):
+            depends_on = []
+        extract = ep.get("extract") or []
+        if isinstance(extract, dict):
+            extract = [extract]
+        elif not isinstance(extract, list):
+            extract = []
+        inject = ep.get("inject") or []
+        if isinstance(inject, dict):
+            inject = [inject]
+        elif not isinstance(inject, list):
+            inject = []
+        chain.append(
+            ChainEndpointInfo(
+                id=eid,
+                path=str(ep.get("path", "")),
+                method=str(ep.get("method", "POST")),
+                depends_on=[str(d) for d in depends_on if d],
+                extract=[e for e in extract if isinstance(e, dict)],
+                inject=[i for i in inject if isinstance(i, dict)],
+            )
+        )
+    return chain
 
 CONFIG_TEMPLATES: list[ConfigTemplateResponse] = [
     ConfigTemplateResponse(
@@ -137,6 +203,42 @@ CONFIG_TEMPLATES: list[ConfigTemplateResponse] = [
 async def list_templates() -> APIResponse[list[ConfigTemplateResponse]]:
     """Return pre-built configuration templates for common integration patterns."""
     return APIResponse(data=CONFIG_TEMPLATES)
+
+
+def _annotate_mapping_errors(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Populate per-row ``transformation_expr_error`` for response serialization.
+
+    Field mappings persisted in the DB never carry the error column — it is
+    a derived response-time field so the UI can render inline red feedback
+    without a separate validation round-trip. Returns a new list; never
+    mutates caller-owned dicts.
+    """
+    annotated: list[dict[str, Any]] = []
+    for raw in mappings:
+        item = dict(raw)
+        expr = item.get("transformation_expr")
+        if expr and expr.strip():
+            valid, error = validate_expression(expr)
+            item["transformation_expr_error"] = None if valid else error
+        else:
+            # Strip any stale error so it never round-trips on a cleared expr.
+            item.pop("transformation_expr_error", None)
+            item["transformation_expr_error"] = None
+        annotated.append(item)
+    return annotated
+
+
+def _collect_expr_errors(mappings: list[dict[str, Any]]) -> list[str]:
+    """Collect ``field_mappings[i].transformation_expr`` errors as flat strings."""
+    errors: list[str] = []
+    for idx, m in enumerate(mappings):
+        expr = m.get("transformation_expr")
+        if not expr or not expr.strip():
+            continue
+        valid, error = validate_expression(expr)
+        if not valid and error:
+            errors.append(f"field_mappings[{idx}].transformation_expr: {error}")
+    return errors
 
 
 def _validate_config(full_config: dict[str, Any]) -> ConfigValidationResult:
@@ -518,7 +620,7 @@ async def generate_configuration(
     """Generate integration configuration from a parsed document and adapter.
 
     Pipeline:
-    1. If AI is enabled and Gemini key is present, attempt LLM generation first.
+    1. If AI is enabled and the configured provider has a key, attempt LLM generation first.
     2. Always run the rule-based field mapper to validate/augment field mappings
        with confidence scores.
     3. If LLM fails, fall back to pure rule-based generation.
@@ -555,7 +657,7 @@ async def generate_configuration(
         else {},
     }
 
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    use_llm = _llm_generation_enabled()
     generation_path = "rule_based"
     config: dict[str, Any] = {}
 
@@ -643,7 +745,7 @@ async def generate_configuration(
         document_id=request.document_id,
         status="configured",
         version=1,
-        field_mappings=json.dumps(raw_mappings),
+        field_mappings=json.dumps(config.get("field_mappings", [])),
         transformation_rules=json.dumps(config.get("transformation_rules", [])),
         hooks=json.dumps(config.get("hooks", [])),
         full_config=json.dumps(config),
@@ -695,7 +797,8 @@ async def generate_configuration(
             document_id=configuration.document_id,
             status=configuration.status,
             version=configuration.version,
-            field_mappings=[FieldMapping(**m) for m in field_mappings],
+            field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
+            chain=_chain_from_full_config(configuration.full_config),
             created_at=configuration.created_at,
             updated_at=configuration.updated_at,
         ),
@@ -720,21 +823,7 @@ async def get_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
-
-    return APIResponse(
-        data=ConfigurationResponse(
-            id=config.id,
-            name=config.name,
-            adapter_version_id=config.adapter_version_id,
-            document_id=config.document_id,
-            status=config.status,
-            version=config.version,
-            field_mappings=[FieldMapping(**m) for m in field_mappings],
-            created_at=config.created_at,
-            updated_at=config.updated_at,
-        ),
-    )
+    return APIResponse(data=_serialize_config(config))
 
 
 def _serialize_config(config: Configuration) -> ConfigurationResponse:
@@ -747,7 +836,8 @@ def _serialize_config(config: Configuration) -> ConfigurationResponse:
         document_id=config.document_id,
         status=config.status,
         version=config.version,
-        field_mappings=[FieldMapping(**m) for m in field_mappings],
+        field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
+        chain=_chain_from_full_config(config.full_config),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -771,10 +861,19 @@ async def update_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
+    expr_errors: list[str] = []
     if body.name is not None:
         config.name = body.name
     if body.field_mappings is not None:
-        config.field_mappings = json.dumps([fm.model_dump() for fm in body.field_mappings])
+        # Strip the response-only error column before persisting and validate
+        # transformation_expr fields. Invalid expressions are still persisted
+        # (per persona: "mapping stays editable") so the user can fix them in
+        # place — the simulator falls back to the enum transformation, and we
+        # surface the parse errors in the response so the UI can render an
+        # inline red message.
+        new_mappings = [fm.model_dump(exclude={"transformation_expr_error"}) for fm in body.field_mappings]
+        expr_errors = _collect_expr_errors(new_mappings)
+        config.field_mappings = json.dumps(new_mappings)
     if body.notes is not None:
         config.notes = body.notes
 
@@ -789,7 +888,16 @@ async def update_configuration(
         details={"updated_fields": [k for k, v in body.model_dump().items() if v is not None]},
     )
 
-    return APIResponse(success=True, data=_serialize_config(config), message="Configuration updated")
+    message = "Configuration updated"
+    if expr_errors:
+        message = f"Configuration updated with {len(expr_errors)} invalid expression(s)"
+
+    return APIResponse(
+        success=True,
+        data=_serialize_config(config),
+        message=message,
+        errors=expr_errors,
+    )
 
 
 @router.post("/{config_id}/validate", response_model=APIResponse[ConfigValidationResult])
@@ -900,6 +1008,144 @@ async def transition_configuration(
     )
 
 
+def _best_effort_transition(
+    config: Configuration, target: ConfigStatus, *, actor: str, reason: str
+) -> None:
+    """Advance ``config.status`` toward ``target`` when the lifecycle permits.
+
+    Used by the composite validate-and-test pipeline to mirror the lifecycle
+    transitions the React client previously orchestrated step by step. Invalid
+    transitions are intentionally swallowed so re-running the pipeline against
+    a config already in ``validating`` or ``testing`` is idempotent — the
+    server lands on the right terminal state either way.
+    """
+    try:
+        lifecycle = IntegrationLifecycle(state=ConfigStatus(config.status))
+        lifecycle.transition(target, actor=actor, reason=reason)
+    except InvalidTransitionError:
+        return
+    config.status = target.value
+
+
+@router.post(
+    "/{config_id}/validate-and-test",
+    response_model=APIResponse[ValidateAndTestResponse],
+)
+async def validate_and_test_configuration(
+    config_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = require_role("admin", "editor"),
+    simulator: IntegrationSimulator = Depends(get_simulator),
+    audit: AuditService = Depends(get_audit_service),
+) -> APIResponse[ValidateAndTestResponse]:
+    """Run the full validate → test pipeline server-side in a single call.
+
+    Encapsulates the four-step flow the Configurations page previously glued
+    together client-side:
+
+    1. Best-effort lifecycle transition ``configured → validating``.
+    2. LLM (or rule-based fallback) configuration validation, persisted as a
+       ``Simulation`` row with ``test_type="integration"``.
+    3. Best-effort lifecycle transition ``validating → testing`` when step 2
+       passes.
+    4. Rule-based or LLM smoke simulation, persisted as a second ``Simulation``
+       row with ``test_type="smoke"``.
+
+    The response carries both underlying ``SimulationResponse`` payloads plus
+    a high-level ``phase`` (``validating | testing | done | error``) so the
+    inline UI panel attached to each config card can render the same progress
+    rows it used to compose from two separate ``/simulations/run`` calls.
+
+    Reuses :func:`finspark.api.routes.simulations.run_simulation_for_config`
+    end-to-end so persistence, audit, events, and webhook delivery match the
+    standalone ``/simulations/run`` endpoint exactly.
+    """
+    from finspark.api.routes.simulations import run_simulation_for_config  # noqa: PLC0415
+
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config or not config.full_config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    _best_effort_transition(
+        config,
+        ConfigStatus.VALIDATING,
+        actor=tenant.tenant_name,
+        reason="validate-and-test:phase=validating",
+    )
+
+    validation = await run_simulation_for_config(
+        db=db,
+        tenant=tenant,
+        simulator=simulator,
+        audit=audit,
+        background_tasks=background_tasks,
+        config=config,
+        test_type="integration",
+    )
+
+    if validation.status != "passed":
+        return APIResponse(
+            data=ValidateAndTestResponse(
+                configuration_id=config_id,
+                phase="error",
+                validation=validation,
+                testing=None,
+                final_status=ConfigStatus(config.status),
+                error_message=(
+                    f"Validation: {validation.passed_tests}/{validation.total_tests} dimensions passed"
+                ),
+            ),
+            success=False,
+            message="Validation failed",
+        )
+
+    _best_effort_transition(
+        config,
+        ConfigStatus.TESTING,
+        actor=tenant.tenant_name,
+        reason="validate-and-test:phase=testing",
+    )
+
+    testing = await run_simulation_for_config(
+        db=db,
+        tenant=tenant,
+        simulator=simulator,
+        audit=audit,
+        background_tasks=background_tasks,
+        config=config,
+        test_type="smoke",
+    )
+
+    pipeline_passed = testing.status == "passed"
+    phase = "done" if pipeline_passed else "error"
+    error_message = (
+        None
+        if pipeline_passed
+        else f"Smoke: {testing.passed_tests}/{testing.total_tests} tests passed"
+    )
+
+    return APIResponse(
+        data=ValidateAndTestResponse(
+            configuration_id=config_id,
+            phase=phase,
+            validation=validation,
+            testing=testing,
+            final_status=ConfigStatus(config.status),
+            error_message=error_message,
+        ),
+        success=pipeline_passed,
+        message=(
+            "Pipeline complete" if pipeline_passed else "Pipeline halted at testing phase"
+        ),
+    )
+
+
 @router.get("/{config_a_id}/diff/{config_b_id}", response_model=APIResponse[ConfigDiffResponse])
 async def compare_configurations(
     config_a_id: str,
@@ -949,22 +1195,7 @@ async def list_configurations(
     result = await db.execute(stmt)
     configs = result.scalars().all()
 
-    return APIResponse(
-        data=[
-            ConfigurationResponse(
-                id=c.id,
-                name=c.name,
-                adapter_version_id=c.adapter_version_id,
-                document_id=c.document_id,
-                status=c.status,
-                version=c.version,
-                field_mappings=json.loads(c.field_mappings) if c.field_mappings else [],
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
-            for c in configs
-        ],
-    )
+    return APIResponse(data=[_serialize_config(c) for c in configs])
 
 
 @router.delete("/{config_id}", response_model=APIResponse[dict])

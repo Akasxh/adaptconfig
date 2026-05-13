@@ -1,13 +1,19 @@
 """Adapter registry routes."""
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.api.dependencies import get_adapter_registry, get_deprecation_tracker, get_tenant_context
+from finspark.api.dependencies import (
+    get_adapter_registry,
+    get_deprecation_tracker,
+    get_tenant_context,
+)
+from finspark.core.config import settings
 from finspark.core.database import get_db
 from finspark.core.json_utils import safe_json_loads
 from finspark.models.document import Document
@@ -15,42 +21,22 @@ from finspark.schemas.adapters import (
     AdapterEndpoint,
     AdapterListResponse,
     AdapterResponse,
+    AdapterSuggestRequest,
+    AdapterSuggestResponse,
     AdapterVersionResponse,
     DeprecationInfoResponse,
     MigrationStep,
 )
 from finspark.schemas.common import APIResponse, TenantContext
 from finspark.schemas.documents import ParsedDocumentResult
+from finspark.services.llm.client import get_llm_client
 from finspark.services.registry.adapter_registry import AdapterRegistry
+from finspark.services.registry.adapter_suggester import AdapterSuggester
 from finspark.services.registry.deprecation import DeprecationTracker
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/adapters", tags=["Adapters"])
-
-
-def compute_adapter_match_score(
-    parsed_result: dict[str, Any],
-    adapter_versions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Return list of {adapter_name, version, score} sorted by score desc."""
-    doc_fields = {f["name"] for f in parsed_result.get("fields", [])}
-    doc_endpoints = {f["path"] for f in parsed_result.get("endpoints", [])}
-
-    matches = []
-    for av in adapter_versions:
-        adapter_endpoints = {ep["path"] for ep in av.get("endpoints", [])}
-        adapter_fields = set(av.get("request_schema", {}).get("properties", {}).keys())
-
-        endpoint_overlap = len(doc_endpoints & adapter_endpoints) / max(len(doc_endpoints | adapter_endpoints), 1)
-        field_overlap = len(doc_fields & adapter_fields) / max(len(doc_fields | adapter_fields), 1)
-        score = endpoint_overlap * 0.6 + field_overlap * 0.4
-
-        matches.append({
-            "adapter_name": av["adapter_name"],
-            "version": av["version"],
-            "score": round(score, 2),
-        })
-
-    return sorted(matches, key=lambda x: x["score"], reverse=True)
 
 
 @router.get("/", response_model=APIResponse[AdapterListResponse])
@@ -113,7 +99,7 @@ async def get_adapter(
 
     versions = []
     for v in adapter.versions:
-        endpoints = json.loads(v.endpoints) if v.endpoints else []
+        endpoints = safe_json_loads(v.endpoints, [])
         versions.append(
             AdapterVersionResponse(
                 id=v.id,
@@ -183,6 +169,53 @@ async def find_matching_adapters(
     service_list = [s.strip() for s in services.split(",")]
     matched = await registry.find_matching_adapters(service_list)
     return APIResponse(data=[a.name for a in matched])
+
+
+@router.post("/suggest", response_model=APIResponse[AdapterSuggestResponse])
+async def suggest_adapter(
+    payload: AdapterSuggestRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+    registry: AdapterRegistry = Depends(get_adapter_registry),
+) -> APIResponse[AdapterSuggestResponse]:
+    """Suggest the best-fit existing adapter(s) for a parsed document.
+
+    Returns up to 3 ranked candidates and a ``suggest_custom`` flag when no
+    candidate clears the confidence threshold (0.55). Used by the Documents
+    detail panel to drive a one-click "use this adapter" or "create custom"
+    flow.
+    """
+    stmt = select(Document).where(
+        Document.id == payload.document_id,
+        Document.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not doc.parsed_result:
+        raise HTTPException(status_code=422, detail="Document has not been parsed yet")
+
+    try:
+        parsed = json.loads(doc.parsed_result)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("adapter_suggest_parsed_decode_error doc_id=%s", doc.id)
+        raise HTTPException(status_code=422, detail="Document parse result is invalid") from exc
+
+    adapters = await registry.list_adapters()
+
+    llm_client = None
+    if settings.ai_enabled:
+        try:
+            llm_client = get_llm_client()
+        except Exception as exc:  # noqa: BLE001 — defensive: missing key, etc.
+            logger.warning("adapter_suggest_llm_unavailable error=%s", exc)
+
+    suggester = AdapterSuggester(llm_client=llm_client)
+    response = await suggester.suggest(parsed, adapters)
+    return APIResponse(data=response)
 
 
 @router.post("/from-document", response_model=APIResponse[AdapterResponse])

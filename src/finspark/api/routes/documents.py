@@ -17,8 +17,6 @@ from finspark.api.dependencies import (
 from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
-
-logger = logging.getLogger(__name__)
 from finspark.core.database import get_db
 from finspark.models.document import Document
 from finspark.schemas.common import APIResponse, DocType, TenantContext
@@ -30,9 +28,21 @@ from finspark.schemas.documents import (
 from finspark.services.parsing.document_parser import DocumentParser
 from finspark.services.webhook_delivery import deliver_event
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".yaml", ".yml", ".json"}
+
+
+def _llm_parsing_enabled() -> bool:
+    """Return whether document parsing should attempt the configured LLM provider."""
+    if not settings.ai_enabled:
+        return False
+    provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(settings, "openai_api_key", ""))
+    return bool(getattr(settings, "gemini_api_key", ""))
 
 
 @router.post("/upload", response_model=APIResponse[DocumentUploadResponse])
@@ -64,12 +74,12 @@ async def upload_document(
     # Validate doc_type against the DocType enum
     try:
         DocType(doc_type)
-    except ValueError:
+    except ValueError as exc:
         valid = [e.value for e in DocType]
         raise HTTPException(
             status_code=400,
             detail=f"Invalid doc_type '{doc_type}'. Allowed: {valid}",
-        )
+        ) from exc
 
     # Validate file size before writing to disk
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
@@ -105,7 +115,7 @@ async def upload_document(
 
     # Parse document — try LLM first for all doc types, fallback to regex
     try:
-        use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+        use_llm = _llm_parsing_enabled()
 
         file_ext = suffix.lstrip(".")
         if file_ext in ("yaml", "yml", "json"):

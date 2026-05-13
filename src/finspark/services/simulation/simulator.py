@@ -8,7 +8,9 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 from finspark.schemas.simulations import SimulationStepResult
+from finspark.services.chain import ChainExecutor
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
+from finspark.services.transformation import apply_transformation_safe
 
 logger = logging.getLogger(__name__)
 
@@ -128,11 +130,15 @@ class IntegrationSimulator:
         # Step 2: Validate field mappings
         steps.append(self._test_field_mappings(config))
 
-        # Step 3: Test each endpoint
+        # Step 3: Test each endpoint -- swap the per-endpoint loop for the
+        # chain executor when the config opts in via ``depends_on`` metadata.
         endpoints = config.get("endpoints", [])
-        for endpoint in endpoints:
-            if endpoint.get("enabled", True):
-                steps.append(self._test_endpoint(endpoint, config))
+        if ChainExecutor.is_chain(endpoints):
+            steps.extend(self._run_chain(endpoints, config))
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    steps.append(self._test_endpoint(endpoint, config))
 
         # Step 4: Test authentication
         steps.append(self._test_auth_config(config))
@@ -158,9 +164,13 @@ class IntegrationSimulator:
         yield self._test_config_structure(config)
         yield self._test_field_mappings(config)
 
-        for endpoint in config.get("endpoints", []):
-            if endpoint.get("enabled", True):
-                yield self._test_endpoint(endpoint, config)
+        endpoints = config.get("endpoints", [])
+        if ChainExecutor.is_chain(endpoints):
+            yield from self._run_chain(endpoints, config)
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    yield self._test_endpoint(endpoint, config)
 
         yield self._test_auth_config(config)
         yield self._test_hooks(config)
@@ -176,14 +186,43 @@ class IntegrationSimulator:
         step_timeout_seconds: int = 30,
     ) -> AsyncGenerator[SimulationStepResult, None]:
         """Yield simulation steps asynchronously, applying a per-step timeout."""
+        endpoints = config.get("endpoints", [])
+        endpoint_step_fns: list[Any] = []
+        if ChainExecutor.is_chain(endpoints):
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_config_structure(config), step_timeout_seconds
+            )
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_field_mappings(config), step_timeout_seconds
+            )
+            chain_steps = await asyncio.to_thread(self._run_chain, endpoints, config)
+            for step in chain_steps:
+                yield step
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_auth_config(config), step_timeout_seconds
+            )
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_hooks(config), step_timeout_seconds
+            )
+            if test_type == "full":
+                yield await self._execute_step_with_timeout(
+                    lambda: self._test_error_handling(config), step_timeout_seconds
+                )
+                yield await self._execute_step_with_timeout(
+                    lambda: self._test_retry_logic(config), step_timeout_seconds
+                )
+            return
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    endpoint_step_fns.append(
+                        (lambda ep: lambda: self._test_endpoint(ep, config))(endpoint)
+                    )
+
         step_fns = [
             lambda: self._test_config_structure(config),
             lambda: self._test_field_mappings(config),
-            *[
-                (lambda ep: lambda: self._test_endpoint(ep, config))(endpoint)
-                for endpoint in config.get("endpoints", [])
-                if endpoint.get("enabled", True)
-            ],
+            *endpoint_step_fns,
             lambda: self._test_auth_config(config),
             lambda: self._test_hooks(config),
         ]
@@ -207,7 +246,7 @@ class IntegrationSimulator:
                 asyncio.to_thread(step_fn),
                 timeout=timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return SimulationStepResult(
                 step_name="unknown_step",
                 status="error",
@@ -585,10 +624,39 @@ Return only the JSON object. No markdown, no prose outside the JSON."""
 
     @staticmethod
     def _build_sample_request(config: dict[str, Any]) -> dict[str, Any]:
-        """Build a sample request from field mappings."""
+        """Build a sample request from field mappings.
+
+        Per-field transformations defined on each mapping are applied here:
+        ``transformation_expr`` (the new free-text DSL) takes precedence; if
+        it is blank or fails to parse, the legacy enum ``transformation``
+        value is applied as a best-effort fallback. The simulator must never
+        crash on a bad expression — :func:`apply_transformation_safe` enforces
+        that contract.
+        """
         request: dict[str, Any] = {}
         for mapping in config.get("field_mappings", []):
             source = mapping.get("source_field", "")
-            if source:
-                request[source] = MockAPIServer.MOCK_DATA.get(source, f"sample_{source}")
+            if not source:
+                continue
+            value = MockAPIServer.MOCK_DATA.get(source, f"sample_{source}")
+            request[source] = apply_transformation_safe(
+                value,
+                mapping.get("transformation_expr"),
+                mapping.get("transformation"),
+            )
         return request
+
+    def _run_chain(
+        self,
+        endpoints: list[dict[str, Any]],
+        config: dict[str, Any],
+    ) -> list[SimulationStepResult]:
+        """Execute the chain runtime in place of the per-endpoint loop.
+
+        Lets :class:`ChainCycleError` propagate so the route layer can convert
+        it into a 400 -- callers should not see a generic 500 when they hand
+        us an invalid graph.
+        """
+        executor = ChainExecutor(self.mock_server)
+        base_request = self._build_sample_request(config)
+        return executor.run(endpoints, config, base_request=base_request)

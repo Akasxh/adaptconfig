@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 
 class TestNoDeprecatedDatetime:
     def test_no_utcnow_in_src(self) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -38,7 +37,6 @@ from finspark.services.lifecycle import (
     IntegrationLifecycle,
     InvalidTransitionError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers – tiny ASGI apps for middleware testing
@@ -622,7 +620,6 @@ class TestJWT:
 
 def _run(coro):
     """Run an async coroutine synchronously using a fresh event loop."""
-    import asyncio
 
     return asyncio.run(coro)
 

@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from finspark.core.config import settings
-from finspark.services.llm.client import GeminiClient, get_llm_client
+from finspark.services.llm.client import get_llm_client
 
 logger = logging.getLogger(__name__)
 

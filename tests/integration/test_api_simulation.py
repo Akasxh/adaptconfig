@@ -11,7 +11,6 @@ from finspark.models.configuration import Configuration
 from finspark.models.document import Document
 from finspark.models.simulation import Simulation
 
-
 # ---------------------------------------------------------------------------
 # Helpers — seed minimal DB rows
 # ---------------------------------------------------------------------------

@@ -116,7 +116,6 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   );
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: page component with filters, table, and pagination
 export default function Audit() {
   const [page, setPage] = useState(1);
   const [actionFilter, setActionFilter] = useState("");

@@ -2,6 +2,7 @@ import type {
   APIResponse,
   Adapter,
   AdapterListResponse,
+  AdapterSuggestResponse,
   AuditEntry,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -17,6 +18,7 @@ import type {
   PaginatedResponse,
   SearchResponse,
   Simulation,
+  ValidateAndTestResponse,
   VersionComparisonResponse,
 } from "@/types";
 import axios from "axios";
@@ -151,6 +153,12 @@ export const adaptersApi = {
         params: { document_id: documentId, name, category },
       })
       .then((r) => r.data),
+  suggest: (documentId: string) =>
+    api
+      .post<APIResponse<AdapterSuggestResponse>>("/api/v1/adapters/suggest", {
+        document_id: documentId,
+      })
+      .then((r) => r.data),
 };
 
 export const documentsApi = {
@@ -190,6 +198,12 @@ export const configurationsApi = {
   validate: (id: string) =>
     api
       .post<APIResponse<ConfigValidationResult>>(`/api/v1/configurations/${id}/validate`)
+      .then((r) => r.data),
+  validateAndTest: (id: string) =>
+    api
+      .post<APIResponse<ValidateAndTestResponse>>(
+        `/api/v1/configurations/${id}/validate-and-test`
+      )
       .then((r) => r.data),
   transition: (id: string, targetState: string, reason?: string) =>
     api

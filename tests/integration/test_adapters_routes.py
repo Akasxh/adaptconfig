@@ -1,6 +1,5 @@
 """Integration tests for adapter API routes to boost coverage."""
 
-import json
 
 import pytest
 from httpx import AsyncClient

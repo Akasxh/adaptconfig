@@ -252,15 +252,14 @@ function SimRow({ sim, configName, onDelete }: { sim: Simulation; configName?: s
         </span>
         <span style={{ fontSize: 12, color: C.muted }}>{formatDuration(sim.duration_ms)}</span>
         {onDelete && (
-          <span
-            role="button"
-            tabIndex={0}
+          <button
+            type="button"
             style={{ color: C.muted, cursor: "pointer", padding: 2, display: "flex" }}
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); onDelete(); } }}
+            aria-label="Delete simulation"
           >
             <Trash2 style={{ width: 13, height: 13 }} />
-          </span>
+          </button>
         )}
         <ChevronDown
           style={{
@@ -325,6 +324,7 @@ const inputStyle: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: simulations page coordinates filters, modal state, and mutations
 export default function Simulations() {
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
@@ -688,6 +688,7 @@ export default function Simulations() {
             background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onClick={(e) => { if (e.target === e.currentTarget) setConfirmDeleteId(null); }}
+          onKeyDown={(e) => { if (e.key === "Escape") setConfirmDeleteId(null); }}
         >
           <div style={{ background: C.elevated, border: `1px solid ${C.border}`, borderRadius: 10, padding: 24, maxWidth: 380, width: "90%" }}>
             <h3 style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 8 }}>Delete simulation?</h3>

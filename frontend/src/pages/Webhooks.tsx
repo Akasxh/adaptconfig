@@ -84,7 +84,7 @@ function AddForm({ onClose }: { onClose: () => void }) {
               <button key={ev} type="button" onClick={() => toggle(ev)} style={{
                 padding: "4px 10px", borderRadius: 9999, fontSize: 11, fontWeight: 600,
                 letterSpacing: "0.04em", cursor: "pointer", transition: "all 120ms ease",
-                border: on ? `1px solid rgba(29,111,164,0.6)` : `1px solid ${C.border}`,
+                border: on ? "1px solid rgba(29,111,164,0.6)" : `1px solid ${C.border}`,
                 background: on ? "rgba(29,111,164,0.18)" : "transparent",
                 color: on ? C.brandLight : C.secondary,
               }}>{ev}</button>
@@ -113,6 +113,7 @@ interface RowProps {
   onTest(): void; onDeleteRequest(): void; onDeleteConfirm(): void; onDeleteCancel(): void;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: row renders multiple mutually exclusive webhook states
 function WebhookRow({ wh, isLast, testResult, testPending, deleteConfirm, deletePending, onTest, onDeleteRequest, onDeleteConfirm, onDeleteCancel }: RowProps) {
   const visible = wh.events.slice(0, 3);
   const overflow = wh.events.length - 3;
@@ -235,9 +236,9 @@ export default function Webhooks() {
           <tbody>
             {isLoading
               ? [0, 1, 2].map((i) => (
-                <tr key={i} style={{ height: 48, borderBottom: `1px solid ${C.border}` }}>
-                  {[300, 180, 60, 80, 110].map((w, ci) => (
-                    <td key={ci} style={{ padding: "0 16px" }}>
+                <tr key={`skeleton-row-${i}`} style={{ height: 48, borderBottom: `1px solid ${C.border}` }}>
+                  {[300, 180, 60, 80, 110].map((w) => (
+                    <td key={`skeleton-cell-${w}`} style={{ padding: "0 16px" }}>
                       <div style={{ height: 12, width: w, borderRadius: 4, background: C.raised }} className="animate-pulse" />
                     </td>
                   ))}

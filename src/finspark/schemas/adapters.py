@@ -61,3 +61,29 @@ class DeprecationInfoResponse(BaseModel):
     days_until_sunset: int | None = None
     replacement_version: str | None = None
     migration_guide: list[MigrationStep] = []
+
+
+class AdapterSuggestRequest(BaseModel):
+    """Request body for POST /adapters/suggest."""
+
+    document_id: str
+
+
+class AdapterSuggestMatch(BaseModel):
+    """One ranked suggestion in the suggest response."""
+
+    adapter_id: str
+    version_id: str
+    adapter_name: str
+    version: str
+    category: AdapterCategory
+    score: float
+    reason: str = ""
+
+
+class AdapterSuggestResponse(BaseModel):
+    """Response body for POST /adapters/suggest."""
+
+    matches: list[AdapterSuggestMatch] = []
+    suggest_custom: bool = False
+    threshold: float = 0.55

@@ -58,7 +58,6 @@ class TestAuditRouteIndirect:
     async def test_query_audit_logs_empty(
         self, client: "AsyncClient", db_session: AsyncSession  # noqa: F821
     ) -> None:
-        from httpx import AsyncClient
 
         resp = await client.get("/api/v1/audit/")
         assert resp.status_code == 200

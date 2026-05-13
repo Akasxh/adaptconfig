@@ -338,9 +338,8 @@ function VersionPanel({ version, adapterId }: { version: AdapterVersion; adapter
                       }}
                     >
                       {deprData.data.migration_guide.map((step, i) => (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: ordered migration steps
                         <div
-                          key={i}
+                          key={`${step.action}-${step.description ?? ""}`}
                           style={{
                             fontSize: "0.6875rem",
                             color: "var(--color-text-secondary)",

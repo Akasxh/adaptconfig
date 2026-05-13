@@ -81,8 +81,47 @@ export interface FieldMapping {
   source_field: string;
   target_field: string;
   transformation?: string;
+  // Optional safe-DSL expression evaluated at runtime by the backend
+  // ``services/transformation`` engine. Examples: ``int(x)``,
+  // ``strip("$") | int(x)``, ``parse_date("DD/MM/YYYY")``,
+  // ``int(x) | clamp(0, 1_000_000)``. When set and parseable, takes
+  // precedence over ``transformation``; when unparseable, the simulator
+  // falls back to ``transformation``.
+  transformation_expr?: string | null;
+  // Server-populated parse error for ``transformation_expr``. Never sent
+  // back to the server on PATCH (it is stripped). Drives inline red
+  // validation feedback in the mappings table.
+  transformation_expr_error?: string | null;
   confidence: number;
   is_confirmed: boolean;
+}
+
+// Chain-runtime view of a configured endpoint -- only present when the
+// config opts in via depends_on. Single-endpoint configs and configs without
+// any depends_on receive an empty chain array from the backend.
+export interface ChainExtractRule {
+  name?: string;
+  path?: string;
+  // Permit other shapes the LLM may emit (e.g. "as", "from") without breaking.
+  [key: string]: unknown;
+}
+
+export interface ChainInjectRule {
+  from?: string;
+  to?: string;
+  source?: string;
+  target?: string;
+  value?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ChainEndpointInfo {
+  id: string;
+  path: string;
+  method: string;
+  depends_on: string[];
+  extract: ChainExtractRule[];
+  inject: ChainInjectRule[];
 }
 
 // Matches ConfigurationResponse Pydantic schema
@@ -96,6 +135,7 @@ export interface Configuration {
   field_mappings: FieldMapping[];
   transformation_rules?: Record<string, unknown>[];
   hooks?: Record<string, unknown>[];
+  chain?: ChainEndpointInfo[];
   created_at: string;
   updated_at: string;
   // legacy optional fields kept for backward compat
@@ -143,6 +183,16 @@ export interface SimulationResults {
   errors: number;
   warnings: number;
   duration_ms: number;
+}
+
+// Matches ValidateAndTestResponse Pydantic schema
+export interface ValidateAndTestResponse {
+  configuration_id: string;
+  phase: "validating" | "testing" | "done" | "error";
+  validation: Simulation;
+  testing: Simulation | null;
+  final_status: string;
+  error_message?: string | null;
 }
 
 // Matches AuditLogResponse Pydantic schema
@@ -239,6 +289,22 @@ export interface DeprecationInfo {
   days_until_sunset: number | null;
   replacement_version: string | null;
   migration_guide: Array<{ action: string; description: string }>;
+}
+
+export interface AdapterSuggestMatch {
+  adapter_id: string;
+  version_id: string;
+  adapter_name: string;
+  version: string;
+  category: string;
+  score: number;
+  reason: string;
+}
+
+export interface AdapterSuggestResponse {
+  matches: AdapterSuggestMatch[];
+  suggest_custom: boolean;
+  threshold: number;
 }
 
 export interface SearchResult {

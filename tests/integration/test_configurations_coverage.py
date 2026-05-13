@@ -6,11 +6,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.models.adapter import Adapter, AdapterVersion
-from finspark.models.configuration import Configuration, ConfigurationHistory
-from finspark.models.document import Document
+from finspark.models.configuration import Configuration
 from finspark.services.registry.adapter_registry import AdapterRegistry
-
 
 TENANT = "test-tenant"
 

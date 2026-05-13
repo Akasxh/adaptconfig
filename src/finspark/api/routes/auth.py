@@ -152,8 +152,8 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
 
     try:
         payload = decode_jwt_token(body.refresh_token)
-    except pyjwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    except pyjwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token") from exc
 
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Not a refresh token")
@@ -192,8 +192,8 @@ async def me(request: Request, db: AsyncSession = Depends(get_db)) -> UserOut:
     token = auth_header[len("Bearer "):]
     try:
         payload = decode_jwt_token(token)
-    except pyjwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except pyjwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
 
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == user_id))

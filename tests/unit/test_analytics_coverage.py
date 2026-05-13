@@ -1,7 +1,6 @@
 """Comprehensive tests for AnalyticsService to boost coverage."""
 
-import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +10,6 @@ from finspark.models.configuration import Configuration
 from finspark.models.document import Document
 from finspark.models.simulation import Simulation
 from finspark.services.analytics import AnalyticsService
-
 
 TENANT = "test-tenant"
 

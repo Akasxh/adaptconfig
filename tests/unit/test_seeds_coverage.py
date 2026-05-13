@@ -1,7 +1,5 @@
 """Tests for seed data loader to boost coverage."""
 
-import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,7 +45,6 @@ class TestSeedAdapters:
     ) -> None:
         """When no adapters exist, seeding runs."""
         from sqlalchemy import select
-        from sqlalchemy.ext.asyncio import AsyncSession
 
         from finspark.models.adapter import Adapter
 

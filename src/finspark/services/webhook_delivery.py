@@ -50,7 +50,7 @@ async def deliver_event(tenant_id: str, event_type: str, payload: dict[str, Any]
                 *[_send_webhook(db, wh, event_type, payload) for wh in matching_webhooks],
                 return_exceptions=True,
             )
-            for wh, res in zip(matching_webhooks, results):
+            for wh, res in zip(matching_webhooks, results, strict=True):
                 if isinstance(res, Exception):
                     logger.error(
                         "Webhook delivery failed for webhook_id=%s event=%s: %s",

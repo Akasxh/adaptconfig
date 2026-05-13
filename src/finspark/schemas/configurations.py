@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from finspark.schemas.common import ConfigStatus
+from finspark.schemas.simulations import SimulationResponse
 
 
 class FieldMapping(BaseModel):
@@ -14,6 +15,16 @@ class FieldMapping(BaseModel):
     source_field: str
     target_field: str
     transformation: str | None = None  # e.g., "uppercase", "date_format", "split"
+    # Free-text safe-DSL expression evaluated by services/transformation.
+    # Examples: 'int(x)', 'strip("$") | int(x)', 'parse_date("DD/MM/YYYY")',
+    # 'int(x) | clamp(0, 1_000_000)'. When blank, the enum `transformation`
+    # value is used. When non-blank but invalid, the simulator falls back to
+    # the enum value and `transformation_expr_error` is populated for the UI.
+    transformation_expr: str | None = None
+    # Validation feedback for `transformation_expr`. Never persisted —
+    # populated at response time so the UI can render an inline red message
+    # without a separate validation round-trip.
+    transformation_expr_error: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     is_confirmed: bool = False
 
@@ -57,6 +68,23 @@ class GenerateConfigRequest(BaseModel):
     auto_map: bool = True  # Use AI for field mapping
 
 
+class ChainEndpointInfo(BaseModel):
+    """Minimal chain-runtime view of a configured endpoint.
+
+    Surfaced on :class:`ConfigurationResponse` only when the LLM-generated
+    config contains chain metadata (``id`` + ``depends_on`` + optional
+    ``extract`` / ``inject``). Single-endpoint configs and configs without
+    any ``depends_on`` get an empty ``chain`` list.
+    """
+
+    id: str
+    path: str
+    method: str = "POST"
+    depends_on: list[str] = []
+    extract: list[dict[str, Any]] = []
+    inject: list[dict[str, Any]] = []
+
+
 class ConfigurationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -69,6 +97,7 @@ class ConfigurationResponse(BaseModel):
     field_mappings: list[FieldMapping] = []
     transformation_rules: list[TransformationRule] = []
     hooks: list[HookConfig] = []
+    chain: list[ChainEndpointInfo] = []
     created_at: datetime
     updated_at: datetime
 
@@ -208,3 +237,18 @@ class VersionComparisonResponse(BaseModel):
     total_changes: int
     breaking_changes: int
     diffs: list[ConfigDiffItem] = []
+
+
+class ValidateAndTestResponse(BaseModel):
+    """Aggregated response from the validate-and-test composite pipeline.
+
+    Wraps two underlying simulation runs (LLM validation + smoke testing)
+    along with the high-level pipeline phase the inline UI panel renders.
+    """
+
+    configuration_id: str
+    phase: str  # validating | testing | done | error
+    validation: SimulationResponse
+    testing: SimulationResponse | None = None
+    final_status: ConfigStatus
+    error_message: str | None = None

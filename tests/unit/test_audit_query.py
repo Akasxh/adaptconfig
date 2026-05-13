@@ -1,7 +1,7 @@
 """Tests for audit log query endpoint: filter-consistent count and malformed JSON handling."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -26,7 +26,7 @@ def _make_log(
         resource_type=resource_type,
         resource_id=resource_id,
         details=details,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

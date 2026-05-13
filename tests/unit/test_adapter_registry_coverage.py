@@ -5,7 +5,6 @@ import json
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.models.adapter import Adapter, AdapterVersion
 from finspark.services.registry.adapter_registry import AdapterRegistry
 
 

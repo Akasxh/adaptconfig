@@ -7,18 +7,18 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from finspark.core.database import engine
-from finspark.models.base import Base
-
 # Import all models so SQLAlchemy registers them on Base.metadata
-from finspark.models import adapter  # noqa: F401
-from finspark.models import audit  # noqa: F401
-from finspark.models import configuration  # noqa: F401
-from finspark.models import document  # noqa: F401
-from finspark.models import simulation  # noqa: F401
-from finspark.models import tenant  # noqa: F401
-from finspark.models import user  # noqa: F401
-from finspark.models import webhook  # noqa: F401
+from finspark.models import (
+    adapter,  # noqa: F401
+    audit,  # noqa: F401
+    configuration,  # noqa: F401
+    document,  # noqa: F401
+    simulation,  # noqa: F401
+    tenant,  # noqa: F401
+    user,  # noqa: F401
+    webhook,  # noqa: F401
+)
+from finspark.models.base import Base
 
 # Alembic Config object
 config = context.config

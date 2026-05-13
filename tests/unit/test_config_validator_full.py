@@ -18,7 +18,6 @@ from finspark.services.config_engine.validator import (
     ValidationRuleResult,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -251,7 +250,7 @@ class TestAuthConfigured:
         assert not result.passed
 
     def test_valid_auth_types_set_completeness(self) -> None:
-        assert VALID_AUTH_TYPES == {"api_key", "oauth2", "bearer", "basic", "jwt", "hmac"}
+        assert {"api_key", "oauth2", "bearer", "basic", "jwt", "hmac"} == VALID_AUTH_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +349,7 @@ class TestEndpointsReachable:
         assert result.passed
 
     def test_valid_http_methods_set_completeness(self) -> None:
-        assert VALID_HTTP_METHODS == {"GET", "POST", "PUT", "PATCH", "DELETE"}
+        assert {"GET", "POST", "PUT", "PATCH", "DELETE"} == VALID_HTTP_METHODS
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +436,7 @@ class TestHooksValid:
         assert "3" in result.message
 
     def test_valid_hook_types_set_completeness(self) -> None:
-        assert VALID_HOOK_TYPES == {"pre_request", "post_response", "on_error", "on_timeout"}
+        assert {"pre_request", "post_response", "on_error", "on_timeout"} == VALID_HOOK_TYPES
 
     def test_empty_handler_string_fails(self, v: ConfigValidator) -> None:
         config = _valid_config()

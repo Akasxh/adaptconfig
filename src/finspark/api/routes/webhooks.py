@@ -4,7 +4,6 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query

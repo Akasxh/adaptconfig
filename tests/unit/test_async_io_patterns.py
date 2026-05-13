@@ -5,7 +5,6 @@ asyncio.to_thread so they do not block the event loop.
 """
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest
@@ -31,11 +30,17 @@ class TestAsyncToThreadUsage:
     """Verify that blocking operations are wrapped in asyncio.to_thread."""
 
     def test_simulation_run_uses_to_thread(self) -> None:
-        """The run_simulation endpoint wraps simulator.run_simulation in to_thread."""
+        """The run_simulation endpoint wraps simulator.run_simulation in to_thread.
+
+        After the ``validate-and-test`` composite refactor the blocking call
+        lives in the shared helper ``run_simulation_for_config`` which the
+        route delegates to. Either function satisfies the issue #73 invariant
+        (do not block the event loop).
+        """
         source = _get_source("src/finspark/api/routes/simulations.py")
-        assert _function_uses_to_thread(source, "run_simulation"), (
-            "run_simulation endpoint should use asyncio.to_thread"
-        )
+        assert _function_uses_to_thread(source, "run_simulation") or _function_uses_to_thread(
+            source, "run_simulation_for_config"
+        ), "run_simulation path should use asyncio.to_thread"
 
     def test_document_upload_uses_to_thread(self) -> None:
         """The document upload endpoint wraps parser.parse in to_thread."""

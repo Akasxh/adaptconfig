@@ -8,7 +8,6 @@ The setup_database autouse fixture from the root conftest is overridden with a
 no-op so that these purely-static tests are not forced to create/drop tables.
 """
 
-import pytest
 import pytest_asyncio
 
 from finspark.models.adapter import AdapterVersion
@@ -32,10 +31,7 @@ def _column_is_indexed(model_class, column_name: str) -> bool:
 def _column_in_any_index(model_class, column_name: str) -> bool:
     """Return True when a column appears in any table-level Index object."""
     col = model_class.__table__.columns[column_name]
-    for idx in model_class.__table__.indexes:
-        if col in idx.columns:
-            return True
-    return False
+    return any(col in idx.columns for idx in model_class.__table__.indexes)
 
 
 def _is_indexed(model_class, column_name: str) -> bool:

@@ -22,7 +22,6 @@ from finspark.core.events import (
 from finspark.services.health_monitor import HealthMonitor
 from finspark.services.health_monitor import monitor as singleton_monitor
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

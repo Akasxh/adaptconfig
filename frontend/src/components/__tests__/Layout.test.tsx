@@ -10,6 +10,7 @@ vi.mock("react-router-dom", () => ({
     return <a href={to} className={cls} style={sty}>{children}</a>;
   },
   Outlet: () => <div data-testid="outlet" />,
+  useNavigate: () => vi.fn(),
 }));
 
 describe("Layout", () => {

@@ -4,10 +4,10 @@ import pytest
 
 from finspark.schemas.common import ConfigStatus
 from finspark.services.lifecycle import (
+    TRANSITIONS,
     AuditEntry,
     IntegrationLifecycle,
     InvalidTransitionError,
-    TRANSITIONS,
 )
 
 

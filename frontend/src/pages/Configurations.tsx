@@ -1,7 +1,8 @@
 import { useToast } from "@/components/Toast";
-import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
+import { adaptersApi, configurationsApi, documentsApi } from "@/lib/api";
 import type {
   Adapter,
+  ChainEndpointInfo,
   ConfigDiffItem,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -13,6 +14,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowDown,
   BarChart3,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +23,7 @@ import {
   Download,
   GitCompare,
   History,
+  Link2,
   Loader2,
   PlayCircle,
   Plus,
@@ -86,6 +89,7 @@ const TRANSITION_BUTTONS: Record<
   validating: [{ label: "Run Tests", icon: PlayCircle, targetState: "__pipeline__" }],
   testing: [{ label: "Deploy", icon: Rocket, targetState: "active" }],
 };
+type TransitionAction = (typeof TRANSITION_BUTTONS)[string][number];
 
 const TRANSFORM_OPTIONS = [
   "none", "upper", "lower", "parse_number", "parse_date",
@@ -159,7 +163,7 @@ function StatusStepper({ status }: { status: string }) {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
               <div style={{
                 width: 10, height: 10, borderRadius: "50%", background: dotColor,
-                boxShadow: isCurrent ? `0 0 0 3px rgba(45, 143, 206, 0.2)` : "none",
+                boxShadow: isCurrent ? "0 0 0 3px rgba(45, 143, 206, 0.2)" : "none",
                 transition: "all 150ms ease",
               }} />
               <span style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: labelColor, whiteSpace: "nowrap" }}>
@@ -339,6 +343,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
   const [mappings, setMappings] = useState<FieldMapping[]>(() => cfg.field_mappings.map((fm) => ({ ...fm })));
   const [isDirty, setIsDirty] = useState(false);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset local edits only when switching config/version
   useEffect(() => {
     setMappings(cfg.field_mappings.map((fm) => ({ ...fm })));
     setIsDirty(false);
@@ -346,10 +351,22 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 
   const saveMutation = useMutation({
     mutationFn: (fms: FieldMapping[]) => configurationsApi.update(cfg.id, { field_mappings: fms }),
-    onSuccess: () => {
+    onSuccess: (resp) => {
       queryClient.invalidateQueries({ queryKey: ["configurations"] });
+      const saved = resp?.data?.field_mappings;
+      const errs = resp?.errors ?? [];
+      // Snap UI to the server's annotation so each row's red message
+      // reflects the canonical parse error. The mapping itself stays
+      // editable — invalid expressions are persisted, not rejected.
+      if (saved && saved.length === mappings.length) {
+        setMappings(saved.map((fm) => ({ ...fm })));
+      }
       setIsDirty(false);
-      toast("Mappings saved.", "success");
+      if (errs.length > 0) {
+        toast(`Saved with ${errs.length} invalid expression${errs.length === 1 ? "" : "s"}.`, "error");
+      } else {
+        toast("Mappings saved.", "success");
+      }
     },
     onError: () => { toast("Failed to save mappings.", "error"); },
   });
@@ -361,6 +378,17 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 
   const updateTransform = (idx: number, value: string) => {
     setMappings((prev) => { const next = [...prev]; next[idx] = { ...next[idx], transformation: value === "none" ? undefined : value }; return next; });
+    setIsDirty(true);
+  };
+
+  const updateExpr = (idx: number, value: string) => {
+    setMappings((prev) => {
+      const next = [...prev];
+      // Clear stale server-side error as soon as the user edits — the next
+      // PATCH response will re-populate it with the canonical verdict.
+      next[idx] = { ...next[idx], transformation_expr: value, transformation_expr_error: null };
+      return next;
+    });
     setIsDirty(true);
   };
 
@@ -391,7 +419,7 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
         <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-bg-base)" }}>
-              {["Source", "→", "Target", "Confidence", "Transform"].map((h) => (
+              {["Source", "→", "Target", "Confidence", "Transform", "Custom expr"].map((h) => (
                 <th key={h} style={{ padding: "8px 12px", textAlign: h === "→" ? "center" : "left", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)" }}>
                   {h}
                 </th>
@@ -399,51 +427,83 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
             </tr>
           </thead>
           <tbody>
-            {mappings.map((fm, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: field mappings have no stable id
-              <tr key={i} style={{ borderBottom: "1px solid var(--color-border)" }}>
-                <td style={{ padding: "8px 12px" }}>
-                  <span className="mono" style={{ color: "var(--color-text-primary)", fontSize: 12 }}>{fm.source_field}</span>
-                </td>
-                <td style={{ padding: "8px 12px", textAlign: "center", color: "var(--color-text-muted)" }}>
-                  <ChevronRight style={{ width: 12, height: 12, margin: "0 auto" }} />
-                </td>
-                <td style={{ padding: "8px 12px", minWidth: 160 }}>
-                  <input
-                    type="text"
-                    value={fm.target_field}
-                    placeholder="target field..."
-                    onChange={(e) => updateTarget(i, e.target.value)}
-                    style={{
-                      width: "100%", borderRadius: 4, border: "1px solid var(--color-border-strong)",
-                      background: "var(--color-bg-raised)", padding: "4px 8px",
-                      fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
-                      outline: "none", boxSizing: "border-box",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
-                  />
-                </td>
-                <td style={{ padding: "8px 12px", minWidth: 120 }}>
-                  <ConfidenceBar value={fm.confidence} hasTarget={!!fm.target_field} />
-                </td>
-                <td style={{ padding: "8px 12px" }}>
-                  <select
-                    value={fm.transformation ?? "none"}
-                    onChange={(e) => updateTransform(i, e.target.value)}
-                    style={{
-                      borderRadius: 4, border: "1px solid var(--color-border-strong)",
-                      background: "var(--color-bg-raised)", padding: "4px 8px",
-                      fontSize: 12, color: "var(--color-text-primary)", outline: "none",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
-                  >
-                    {TRANSFORM_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                </td>
-              </tr>
-            ))}
+            {mappings.map((fm, i) => {
+              const exprError = fm.transformation_expr_error ?? null;
+              const exprValue = fm.transformation_expr ?? "";
+              const exprBorder = exprError ? "var(--color-error-text)" : "var(--color-border-strong)";
+              return (
+                // biome-ignore lint/suspicious/noArrayIndexKey: field mappings have no stable id
+                <tr key={i} style={{ borderBottom: "1px solid var(--color-border)" }}>
+                  <td style={{ padding: "8px 12px" }}>
+                    <span className="mono" style={{ color: "var(--color-text-primary)", fontSize: 12 }}>{fm.source_field}</span>
+                  </td>
+                  <td style={{ padding: "8px 12px", textAlign: "center", color: "var(--color-text-muted)" }}>
+                    <ChevronRight style={{ width: 12, height: 12, margin: "0 auto" }} />
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 160 }}>
+                    <input
+                      type="text"
+                      value={fm.target_field}
+                      placeholder="target field..."
+                      onChange={(e) => updateTarget(i, e.target.value)}
+                      style={{
+                        width: "100%", borderRadius: 4, border: "1px solid var(--color-border-strong)",
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
+                        outline: "none", boxSizing: "border-box",
+                      }}
+                      onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
+                      onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                    />
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 120 }}>
+                    <ConfidenceBar value={fm.confidence} hasTarget={!!fm.target_field} />
+                  </td>
+                  <td style={{ padding: "8px 12px" }}>
+                    <select
+                      value={fm.transformation ?? "none"}
+                      onChange={(e) => updateTransform(i, e.target.value)}
+                      style={{
+                        borderRadius: 4, border: "1px solid var(--color-border-strong)",
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontSize: 12, color: "var(--color-text-primary)", outline: "none",
+                      }}
+                      onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-brand-light)"; }}
+                      onBlur={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+                    >
+                      {TRANSFORM_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "8px 12px", minWidth: 220 }}>
+                    <input
+                      type="text"
+                      value={exprValue}
+                      placeholder='int(x) | clamp(0, 1_000_000)'
+                      aria-invalid={exprError ? true : undefined}
+                      title={exprError ?? "Optional safe DSL: int(x), float(x), strip(\"$\"), parse_date(\"DD/MM/YYYY\"), upper(x), lower(x), clamp(min, max), chained with |"}
+                      onChange={(e) => updateExpr(i, e.target.value)}
+                      style={{
+                        width: "100%", borderRadius: 4, border: `1px solid ${exprBorder}`,
+                        background: "var(--color-bg-raised)", padding: "4px 8px",
+                        fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
+                        outline: "none", boxSizing: "border-box",
+                      }}
+                      onFocus={(e) => {
+                        if (!exprError) e.currentTarget.style.borderColor = "var(--color-brand-light)";
+                      }}
+                      onBlur={(e) => {
+                        e.currentTarget.style.borderColor = exprError ? "var(--color-error-text)" : "var(--color-border-strong)";
+                      }}
+                    />
+                    {exprError && (
+                      <p style={{ fontSize: 11, color: "var(--color-error-text)", marginTop: 4, lineHeight: 1.3 }}>
+                        {exprError}
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -452,6 +512,131 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 }
 
 type DetailTab = "mappings" | "history" | "validation";
+
+// ── Chain Panel ──────────────────────────────────────────────────────────────
+// Compact vertical chain `[A] -> [B] -> [C]` that surfaces the LLM-generated
+// `id` / `depends_on` / `extract` / `inject` placeholders. Renders only when
+// the backend actually populates `cfg.chain` (>=2 endpoints with depends_on);
+// single-endpoint configs show nothing here.
+
+function describeExtract(rule: ChainEndpointInfo["extract"][number]): string {
+  const path = (rule.path ?? rule.from ?? rule.source ?? "") as string;
+  const name = (rule.name ?? rule.as ?? rule.target ?? path) as string;
+  if (!path && !name) return "";
+  if (name && path && name !== path) return `${name} ← ${path}`;
+  return path || name;
+}
+
+function describeInject(rule: ChainEndpointInfo["inject"][number]): string {
+  const target = (rule.to ?? rule.target ?? rule.into ?? rule.name ?? "") as string;
+  const source = (rule.from ?? rule.source ?? rule.ref ?? "") as string;
+  if (!target) return "";
+  return source ? `${target} ← ${source}` : target;
+}
+
+function ChainPanel({ chain }: { chain: ChainEndpointInfo[] }) {
+  if (!chain || chain.length < 2) return null;
+  return (
+    <div>
+      <p
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          color: "var(--color-text-muted)",
+          marginBottom: 12,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <Link2 style={{ width: 11, height: 11 }} />
+        Endpoint chain
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        {chain.map((step, idx) => {
+          const extracts = step.extract.map(describeExtract).filter(Boolean);
+          const isLast = idx === chain.length - 1;
+          return (
+            <div key={`${step.id}-${idx}`} style={{ display: "flex", flexDirection: "column" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: "var(--color-bg-elevated)",
+                  border: "1px solid var(--color-border)",
+                }}
+              >
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--color-brand-light)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  [{step.id}]
+                </span>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  {step.method.toUpperCase()}
+                </span>
+                <span
+                  className="mono"
+                  style={{ fontSize: 12, color: "var(--color-text-primary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={step.path}
+                >
+                  {step.path || "(no path)"}
+                </span>
+                {step.depends_on.length > 0 && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "var(--color-text-muted)",
+                    }}
+                    title={`depends on: ${step.depends_on.join(", ")}`}
+                  >
+                    after {step.depends_on.join(", ")}
+                  </span>
+                )}
+              </div>
+              {!isLast && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 2,
+                    padding: "4px 0 4px 18px",
+                    fontSize: 11,
+                    color: "var(--color-text-muted)",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {extracts.length > 0 && (
+                    <span className="mono">
+                      extract: {extracts.join(", ")}
+                    </span>
+                  )}
+                  {chain[idx + 1].inject.length > 0 && (
+                    <span className="mono">
+                      inject → {chain[idx + 1].inject.map(describeInject).filter(Boolean).join(", ") || "(none)"}
+                    </span>
+                  )}
+                  <ArrowDown style={{ width: 12, height: 12, marginTop: 2, color: "var(--color-text-muted)" }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
@@ -496,6 +681,9 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         </p>
         <StatusStepper status={cfg.status} />
       </div>
+
+      {/* Endpoint chain (only renders for chain configs) */}
+      {cfg.chain && cfg.chain.length >= 2 && <ChainPanel chain={cfg.chain} />}
 
       {/* Export */}
       <div>
@@ -1068,10 +1256,10 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
 
       <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
         <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+          <label htmlFor="config-document-id" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
             Document
           </label>
-          <select value={documentId} onChange={(e) => handleDocumentChange(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
+          <select id="config-document-id" value={documentId} onChange={(e) => handleDocumentChange(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
             <option value="">Select document...</option>
             {docs.map((doc) => (
               <option key={doc.id} value={doc.id}>{doc.filename} ({doc.status})</option>
@@ -1080,20 +1268,21 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
         </div>
 
         <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+          <label htmlFor="config-adapter-id" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
             Adapter
           </label>
-          <select value={selectedAdapterId} onChange={(e) => handleAdapterChange(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
+          <select id="config-adapter-id" value={selectedAdapterId} onChange={(e) => handleAdapterChange(e.target.value)} style={inputStyle} onFocus={focusStyle} onBlur={blurStyle}>
             <option value="">Select adapter...</option>
             {adapters.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
 
         <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+          <label htmlFor="config-adapter-version-id" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
             Version
           </label>
           <select
+            id="config-adapter-version-id"
             value={adapterVersionId}
             onChange={(e) => setAdapterVersionId(e.target.value)}
             disabled={!selectedAdapter}
@@ -1108,10 +1297,11 @@ function GenerateForm({ onDone }: { onDone: () => void }) {
         </div>
 
         <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
+          <label htmlFor="config-name" style={{ display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-muted)", marginBottom: 6 }}>
             Name
           </label>
           <input
+            id="config-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -1297,96 +1487,49 @@ export default function Configurations() {
     queryFn: () => configurationsApi.list(),
   });
 
-  const [lastSimResult, setLastSimResult] = useState<{
-    configId: string; status: string; passed: number; total: number; steps: Array<{ step_name: string; status: string; error_message?: string }>;
-  } | null>(null);
-
   const [pipeline, setPipeline] = useState<PipelineUI | null>(null);
 
   // One-click pipeline: configured → validate (LLM 7-dim) → testing → smoke.
-  // Optimistically renders skeleton step rows the moment the user clicks,
-  // then snaps each row to the real verdict when the LLM call resolves.
+  // Server-side composite endpoint runs both phases in one request; this
+  // mutation optimistically renders skeleton step rows the moment the user
+  // clicks and snaps each row to the real verdict when the call resolves.
   const runPipelineMutation = useMutation({
-    mutationFn: async ({ id, name, currentStatus }: { id: string; name: string; currentStatus: string }) => {
-      // Phase 1 — Validation
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
       setPipeline({
         configId: id,
         configName: name,
         phase: "validating",
         validation: VALIDATION_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-        testing: [],
+        testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "pending" as StepStatus })),
       });
 
-      if (currentStatus === "configured") {
-        try {
-          await configurationsApi.transition(id, "validating");
-        } catch {
-          // already validating, ignore
-        }
-      }
+      const resp = await configurationsApi.validateAndTest(id);
+      const result = resp.data;
 
-      const valResp = await simulationsApi.run({ configuration_id: id, test_type: "integration" });
-      const valData = valResp.data;
-      const valSteps: PipelineStep[] = (valData?.steps || []).map((s: any) => ({
+      const valSim = result?.validation;
+      const valSteps: PipelineStep[] = (valSim?.steps ?? []).map((s) => ({
         name: s.step_name,
         status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
         confidence: s.confidence_score ?? undefined,
         analysis: s.error_message || undefined,
       }));
-      setPipeline((s) => (s ? { ...s, validation: valSteps.length ? valSteps : s.validation } : s));
 
-      if (!valData || valData.status !== "passed") {
-        setPipeline((s) =>
-          s
-            ? {
-                ...s,
-                phase: "error",
-                errorMsg: valData
-                  ? `Validation: ${valData.passed_tests}/${valData.total_tests} dimensions passed`
-                  : "Validation request failed",
-              }
-            : s,
-        );
-        return;
-      }
-
-      // Phase 2 — Smoke tests
-      setPipeline((s) =>
-        s
-          ? {
-              ...s,
-              phase: "testing",
-              testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-            }
-          : s,
-      );
-
-      try {
-        await configurationsApi.transition(id, "testing");
-      } catch {
-        // already testing, ignore
-      }
-
-      const testResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-      const testData = testResp.data;
-      const testSteps: PipelineStep[] = (testData?.steps || []).map((s: any) => ({
+      const testSim = result?.testing ?? null;
+      const testSteps: PipelineStep[] = (testSim?.steps ?? []).map((s) => ({
         name: s.step_name,
         status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
         confidence: s.confidence_score ?? undefined,
         analysis: s.error_message || undefined,
       }));
+
       setPipeline((s) =>
         s
           ? {
               ...s,
+              phase: (result?.phase ?? "error") as PipelinePhase,
+              validation: valSteps.length ? valSteps : s.validation,
               testing: testSteps.length ? testSteps : s.testing,
-              phase: testData && testData.status === "passed" ? "done" : "error",
-              errorMsg:
-                testData && testData.status === "passed"
-                  ? undefined
-                  : testData
-                    ? `Smoke: ${testData.passed_tests}/${testData.total_tests} tests passed`
-                    : "Smoke request failed",
+              errorMsg: result?.error_message ?? undefined,
             }
           : s,
       );
@@ -1405,36 +1548,13 @@ export default function Configurations() {
 
   const transitionMutation = useMutation({
     mutationFn: async ({ id, targetState }: { id: string; targetState: string }) => {
-      const transResult = await configurationsApi.transition(id, targetState);
-      // Auto-run simulation when transitioning to "testing"
-      if (targetState === "testing") {
-        try {
-          const simResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-          const sim = simResp.data;
-          if (sim) {
-            setLastSimResult({
-              configId: id,
-              status: sim.status,
-              passed: sim.passed_tests,
-              total: sim.total_tests,
-              steps: sim.steps || [],
-            });
-          }
-        } catch {
-          // Simulation failed but transition succeeded — still OK
-        }
-      }
-      return transResult;
+      return configurationsApi.transition(id, targetState);
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["configurations"] });
       queryClient.invalidateQueries({ queryKey: ["config-history"] });
-      if (vars.targetState === "testing" && lastSimResult) {
-        toast(`Testing: ${lastSimResult.passed}/${lastSimResult.total} passed`, lastSimResult.status === "passed" ? "success" : "error");
-      } else {
-        const labels: Record<string, string> = { configured: "Marked as configured", validating: "Validation started", testing: "Testing started", active: "Deployed to production" };
-        toast(labels[vars.targetState] || "State updated.", "success");
-      }
+      const labels: Record<string, string> = { configured: "Marked as configured", validating: "Validation started", testing: "Testing started", active: "Deployed to production" };
+      toast(labels[vars.targetState] || "State updated.", "success");
     },
     onError: () => { toast("Transition failed.", "error"); },
   });
@@ -1451,6 +1571,29 @@ export default function Configurations() {
       setConfirmDelete(null);
     },
   });
+
+  function isTransitionBusy(action: TransitionAction, configId: string) {
+    if (action.targetState === "__pipeline__") {
+      return runPipelineMutation.isPending && pipeline?.configId === configId;
+    }
+    return transitionMutation.isPending;
+  }
+
+  function handleTransitionClick(
+    e: React.MouseEvent<HTMLButtonElement>,
+    action: TransitionAction,
+    cfg: Configuration
+  ) {
+    e.stopPropagation();
+    if (action.targetState === "__pipeline__") {
+      runPipelineMutation.mutate({ id: cfg.id, name: cfg.name });
+      return;
+    }
+    if (action.targetState === "active" && !window.confirm(`Deploy "${cfg.name}" to production?`)) {
+      return;
+    }
+    transitionMutation.mutate({ id: cfg.id, targetState: action.targetState });
+  }
 
   const configs: Configuration[] = data?.data ?? [];
 
@@ -1518,46 +1661,52 @@ export default function Configurations() {
             return (
               <div key={cfg.id} className="card" style={{ overflow: "hidden" }}>
                 {/* Row header */}
-                <button
-                  type="button"
+                <div
                   style={{
                     display: "flex", width: "100%", alignItems: "center", gap: 16,
-                    padding: "14px 20px", textAlign: "left", background: "transparent", cursor: "pointer",
+                    padding: "14px 20px", background: "transparent",
                     transition: "background 100ms ease",
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-bg-raised)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => setExpandedId(isExpanded ? null : cfg.id)}
                 >
-                  <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--color-bg-raised)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <Settings style={{ width: 16, height: 16, color: "var(--color-text-muted)" }} />
-                  </div>
+                  <button
+                    type="button"
+                    style={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: 16, textAlign: "left", background: "transparent", cursor: "pointer" }}
+                    onClick={() => setExpandedId(isExpanded ? null : cfg.id)}
+                  >
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--color-bg-raised)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <Settings style={{ width: 16, height: 16, color: "var(--color-text-muted)" }} />
+                    </div>
 
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-primary)" }}>{cfg.name}</span>
-                      <span className={st.cls}>{st.label}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-primary)" }}>{cfg.name}</span>
+                        <span className={st.cls}>{st.label}</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--color-text-muted)" }}>
+                        <span className="mono" style={{ fontSize: 12 }}>v{cfg.version}</span>
+                        <span>·</span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <Clock style={{ width: 11, height: 11 }} />
+                          {fmtDate(cfg.updated_at)}
+                        </span>
+                        <span>·</span>
+                        <span>{cfg.field_mappings.length} mappings</span>
+                      </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--color-text-muted)" }}>
-                      <span className="mono" style={{ fontSize: 12 }}>v{cfg.version}</span>
-                      <span>·</span>
-                      <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <Clock style={{ width: 11, height: 11 }} />
-                        {fmtDate(cfg.updated_at)}
-                      </span>
-                      <span>·</span>
-                      <span>{cfg.field_mappings.length} mappings</span>
-                    </div>
-                  </div>
+
+                    <ChevronDown style={{
+                      width: 15, height: 15, color: "var(--color-text-muted)", flexShrink: 0,
+                      transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease",
+                    }} />
+                  </button>
 
                   {/* Lifecycle transition buttons + delete */}
-                  <div style={{ display: "flex", gap: 8 }} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: "flex", gap: 8 }}>
                     {transitions.map((t) => {
                       const TIcon = t.icon;
-                      const isPipeline = t.targetState === "__pipeline__";
-                      const busy = isPipeline
-                        ? runPipelineMutation.isPending && pipeline?.configId === cfg.id
-                        : transitionMutation.isPending;
+                      const busy = isTransitionBusy(t, cfg.id);
                       return (
                         <button
                           key={t.targetState + cfg.status}
@@ -1565,16 +1714,7 @@ export default function Configurations() {
                           className="btn-secondary"
                           style={{ fontSize: 11, padding: "5px 10px" }}
                           disabled={busy || runPipelineMutation.isPending}
-                          onClick={() => {
-                            if (isPipeline) {
-                              setLastSimResult(null);
-                              runPipelineMutation.mutate({ id: cfg.id, name: cfg.name, currentStatus: cfg.status });
-                              return;
-                            }
-                            if (t.targetState === "active" && !window.confirm(`Deploy "${cfg.name}" to production?`)) return;
-                            setLastSimResult(null);
-                            transitionMutation.mutate({ id: cfg.id, targetState: t.targetState });
-                          }}
+                          onClick={(e) => handleTransitionClick(e, t, cfg)}
                         >
                           {busy ? (
                             <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
@@ -1589,52 +1729,21 @@ export default function Configurations() {
                       type="button"
                       className="btn-secondary"
                       style={{ fontSize: 11, padding: "5px 8px", color: "var(--color-error-text)" }}
-                      onClick={() => setConfirmDelete(cfg)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(cfg);
+                      }}
                       aria-label={`Delete ${cfg.name}`}
                     >
                       <Trash2 style={{ width: 12, height: 12 }} />
                     </button>
                   </div>
-
-                  <ChevronDown style={{
-                    width: 15, height: 15, color: "var(--color-text-muted)", flexShrink: 0,
-                    transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease",
-                  }} />
-                </button>
+                </div>
 
                 {/* Inline pipeline progress — only renders for the config that ran it */}
                 {pipeline && pipeline.configId === cfg.id && (
                   <div style={{ padding: "12px 18px", borderTop: "1px solid var(--color-border)" }}>
                     <ValidationPipelinePanel ui={pipeline} onClose={() => setPipeline(null)} />
-                  </div>
-                )}
-
-                {/* Simulation results after transitioning to testing */}
-                {lastSimResult && lastSimResult.configId === cfg.id && (
-                  <div style={{
-                    padding: "12px 18px", borderTop: `1px solid var(--color-border)`,
-                    background: lastSimResult.status === "passed" ? "rgba(52,211,153,0.06)" : "rgba(248,113,113,0.06)",
-                    borderRadius: "0 0 var(--glass-radius) var(--glass-radius)",
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <span style={{ fontWeight: 700, fontSize: 13, color: lastSimResult.status === "passed" ? "var(--color-success-text)" : "var(--color-error-text)" }}>
-                        {lastSimResult.status === "passed" ? "✓" : "✗"} Simulation {lastSimResult.status.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                        — {lastSimResult.passed}/{lastSimResult.total} tests passed
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {lastSimResult.steps.map((s, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                          <span style={{ color: s.status === "passed" ? "var(--color-success-text)" : "var(--color-error-text)", fontWeight: 600 }}>
-                            {s.status === "passed" ? "✓" : "✗"}
-                          </span>
-                          <span style={{ color: "var(--color-text-secondary)" }}>{s.step_name}</span>
-                          {s.error_message && <span style={{ color: "var(--color-error-text)", fontSize: 11 }}>— {s.error_message}</span>}
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
 
@@ -1654,6 +1763,7 @@ export default function Configurations() {
             background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onClick={(e) => { if (e.target === e.currentTarget) setConfirmDelete(null); }}
+          onKeyDown={(e) => { if (e.key === "Escape") setConfirmDelete(null); }}
         >
           <div className="card" style={{ padding: 24, maxWidth: 420, width: "90%" }}>
             <h3 style={{ fontSize: 15, fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 8 }}>

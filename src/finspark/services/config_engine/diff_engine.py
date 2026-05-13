@@ -111,12 +111,12 @@ class ConfigDiffEngine:
         if any(k is not None for k in a_keys) or any(k is not None for k in b_keys):
             # Identity-based matching
             a_by_key: dict[Any, Any] = {}
-            for idx, (item, key) in enumerate(zip(a, a_keys)):
+            for idx, (item, key) in enumerate(zip(a, a_keys, strict=True)):
                 k = key if key is not None else f"__pos_{idx}"
                 a_by_key[k] = item
 
             b_by_key: dict[Any, Any] = {}
-            for idx, (item, key) in enumerate(zip(b, b_keys)):
+            for idx, (item, key) in enumerate(zip(b, b_keys, strict=True)):
                 k = key if key is not None else f"__pos_{idx}"
                 b_by_key[k] = item
 
