@@ -7,14 +7,43 @@ from pydantic import BaseModel, ConfigDict, Field
 from finspark.schemas.common import DocType, FileType
 
 
+class ExtractRule(BaseModel):
+    """Pull a value out of an endpoint's response and stash it in the chain context.
+
+    json_path uses dotted-key notation (e.g., "data.access_token", "items.0.id").
+    save_as is the key under which the value lives in the run-context dict; later
+    endpoints reference it via inject templates like "{{access_token}}".
+    """
+
+    json_path: str
+    save_as: str
+
+
+class InjectRule(BaseModel):
+    """Place a value from chain context into this endpoint's request.
+
+    template is a Mustache-style string ("Bearer {{access_token}}"). location is
+    where it goes in the outgoing request: header, query, path, or body.
+    target_field is the key in that location to write to.
+    """
+
+    template: str
+    location: str = "header"  # header | query | path | body
+    target_field: str = ""
+
+
 class ExtractedEndpoint(BaseModel):
     """An API endpoint extracted from a document."""
 
+    id: str = ""  # Stable identifier for chain references (e.g., "oauth_token"). Auto-assigned if blank.
     path: str
     method: str = "GET"
     description: str = ""
     parameters: list[dict[str, str]] = []
     is_mandatory: bool = True
+    depends_on: list[str] = []  # IDs of endpoints whose output this one needs
+    extract: list[ExtractRule] = []  # Values to pull out of this endpoint's response
+    inject: list[InjectRule] = []  # Values to plug into this endpoint's request from context
 
 
 class ExtractedField(BaseModel):

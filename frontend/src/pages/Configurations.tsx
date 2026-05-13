@@ -2,6 +2,8 @@ import { useToast } from "@/components/Toast";
 import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
 import type {
   Adapter,
+  ChainRun,
+  ChainStepResult,
   ConfigDiffItem,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -23,6 +25,7 @@ import {
   GitCompare,
   History,
   Loader2,
+  Network,
   PlayCircle,
   Plus,
   Rocket,
@@ -672,7 +675,352 @@ function TransformPanel({ cfg }: { cfg: Configuration }) {
 }
 
 
-type DetailTab = "mappings" | "history" | "validation" | "transform";
+// ── Chain (DAG) test panel ───────────────────────────────────────────────────
+
+
+function ChainTestPanel({ cfg }: { cfg: Configuration }) {
+  const { toast } = useToast();
+  const [run, setRun] = useState<ChainRun | null>(null);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
+  const runMutation = useMutation({
+    mutationFn: () => simulationsApi.run({ configuration_id: cfg.id, test_type: "chain" }),
+    onSuccess: (resp) => {
+      const cr = (resp.data as { chain_run?: ChainRun | null } | undefined)?.chain_run ?? null;
+      setRun(cr);
+      setSelectedNode(null);
+      if (cr?.cycle_error) {
+        toast(`Chain config error: ${cr.cycle_error}`, "error");
+      } else if (cr) {
+        toast(cr.summary, cr.ok ? "success" : "error");
+      }
+    },
+    onError: () => toast("Chain test failed.", "error"),
+  });
+
+  // ── SVG layout ─────────────────────────────────────────────────────────────
+  // Lay out by topo layer: each layer column, nodes within centered vertically.
+  const NODE_W = 230;
+  const NODE_H = 84;
+  const COL_GAP = 70;
+  const ROW_GAP = 26;
+  const PAD = 16;
+
+  const layout = (() => {
+    if (!run?.graph) return null;
+    const layers = run.graph.layers;
+    if (!layers.length) return null;
+    const heights = layers.map((l) => l.length * NODE_H + Math.max(0, l.length - 1) * ROW_GAP);
+    const svgH = Math.max(...heights) + 2 * PAD;
+    const svgW = layers.length * NODE_W + (layers.length - 1) * COL_GAP + 2 * PAD;
+    const positions: Record<string, { x: number; y: number }> = {};
+    layers.forEach((layer, li) => {
+      const colH = layer.length * NODE_H + Math.max(0, layer.length - 1) * ROW_GAP;
+      const topOffset = (svgH - colH) / 2;
+      layer.forEach((id, ni) => {
+        positions[id] = {
+          x: PAD + li * (NODE_W + COL_GAP),
+          y: topOffset + ni * (NODE_H + ROW_GAP),
+        };
+      });
+    });
+    return { positions, svgW, svgH };
+  })();
+
+  // ── Per-step state, color, status ─────────────────────────────────────────
+  const statusMeta: Record<ChainStepResult["status"], { fg: string; bg: string; label: string }> = {
+    passed:                  { fg: "#22c55e", bg: "rgba(34,197,94,0.10)",  label: "PASSED" },
+    failed:                  { fg: "#ef4444", bg: "rgba(239,68,68,0.10)",  label: "FAILED" },
+    blocked_by_upstream:     { fg: "#94a3b8", bg: "rgba(148,163,184,0.10)", label: "BLOCKED" },
+    mock_contract_violation: { fg: "#f59e0b", bg: "rgba(245,158,11,0.10)", label: "MOCK MISMATCH" },
+  };
+  const edgeColor: Record<string, string> = {
+    data: "#475569",
+    auth: "#3b82f6",
+    polling: "#a855f7",
+    compensates: "#f59e0b",
+  };
+  const stepById: Record<string, ChainStepResult> = {};
+  for (const s of run?.steps ?? []) stepById[s.id] = s;
+  const selectedStep = selectedNode ? stepById[selectedNode] ?? null : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 4 }}>
+            Chain test — run the call sequence with mocked responses
+          </p>
+          <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
+            Resolves dependencies from the source document, executes endpoints in topological order,
+            and propagates extracted values through the request chain. If a step fails, downstream
+            steps are marked blocked rather than incorrectly attributed.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ fontSize: 12, padding: "6px 14px", flexShrink: 0 }}
+          onClick={() => runMutation.mutate()}
+          disabled={runMutation.isPending}
+        >
+          {runMutation.isPending ? (
+            <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+          ) : (
+            <Network style={{ width: 13, height: 13 }} />
+          )}
+          Run Chain Test
+        </button>
+      </div>
+
+      {run?.cycle_error && (
+        <div style={{
+          padding: 12, borderRadius: 8,
+          border: "1px solid var(--color-error)",
+          background: "rgba(239,68,68,0.08)",
+          fontSize: 12, color: "var(--color-error)",
+        }}>
+          <strong>Cycle in chain definition:</strong> {run.cycle_error}
+        </div>
+      )}
+
+      {run && layout && (
+        <>
+          {/* Summary header */}
+          <div style={{
+            padding: 12, borderRadius: 8,
+            border: `1px solid ${run.ok ? "var(--color-success-text)" : "var(--color-error)"}`,
+            background: "var(--color-surface-2)",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {run.ok
+                ? <CheckCircle2 style={{ width: 14, height: 14, color: "var(--color-success-text)" }} />
+                : <AlertCircle style={{ width: 14, height: 14, color: "var(--color-error)" }} />}
+              <span style={{ fontSize: 13, fontWeight: 700, color: run.ok ? "var(--color-success-text)" : "var(--color-error)" }}>
+                {run.summary}
+              </span>
+            </div>
+            {run.blocked_root && (
+              <span style={{ fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace" }}>
+                root cause: <strong style={{ color: "var(--color-error)" }}>{run.blocked_root}</strong>
+              </span>
+            )}
+          </div>
+
+          {/* SVG DAG */}
+          <div style={{
+            overflow: "auto", border: "1px solid var(--color-border)", borderRadius: 8,
+            background: "var(--color-bg-base)",
+          }}>
+            <svg
+              width={layout.svgW}
+              height={layout.svgH}
+              style={{ display: "block", minWidth: "100%" }}
+            >
+              <defs>
+                {Object.entries(edgeColor).map(([k, c]) => (
+                  <marker key={k} id={`arrow-${k}`} viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill={c} />
+                  </marker>
+                ))}
+              </defs>
+
+              {/* Edges first so nodes draw over them */}
+              {run.graph?.edges.map((e, i) => {
+                const a = layout.positions[e.source];
+                const b = layout.positions[e.target];
+                if (!a || !b) return null;
+                const sx = a.x + NODE_W;
+                const sy = a.y + NODE_H / 2;
+                const tx = b.x;
+                const ty = b.y + NODE_H / 2;
+                const midX = (sx + tx) / 2;
+                const d = `M ${sx} ${sy} C ${midX} ${sy}, ${midX} ${ty}, ${tx} ${ty}`;
+                const stroke = edgeColor[e.kind] ?? "#475569";
+                return (
+                  <g key={i}>
+                    <path d={d} stroke={stroke} strokeWidth={1.5} fill="none"
+                      strokeDasharray={e.kind === "polling" ? "4 4" : undefined}
+                      markerEnd={`url(#arrow-${e.kind})`} />
+                    {e.via && (
+                      <text x={midX} y={(sy + ty) / 2 - 6} textAnchor="middle"
+                        fontSize={10} fontFamily="monospace" fill={stroke}
+                        style={{ pointerEvents: "none" }}>
+                        {e.via}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* Nodes */}
+              {run.graph?.nodes.map((n) => {
+                const pos = layout.positions[n.id];
+                if (!pos) return null;
+                const step = stepById[n.id];
+                const meta = step ? statusMeta[step.status] : statusMeta.passed;
+                const isSelected = selectedNode === n.id;
+                return (
+                  <g
+                    key={n.id}
+                    transform={`translate(${pos.x}, ${pos.y})`}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setSelectedNode(isSelected ? null : n.id)}
+                  >
+                    <rect
+                      width={NODE_W}
+                      height={NODE_H}
+                      rx={8}
+                      fill={meta.bg}
+                      stroke={isSelected ? "var(--color-brand-light)" : meta.fg}
+                      strokeWidth={isSelected ? 2 : 1.5}
+                    />
+                    <text x={12} y={20} fontSize={11} fontWeight={700}
+                      fontFamily="monospace" fill={meta.fg}>
+                      {n.method}
+                    </text>
+                    <text x={42} y={20} fontSize={11} fontFamily="monospace"
+                      fill="var(--color-text-primary)" style={{ pointerEvents: "none" }}>
+                      {n.path.length > 24 ? n.path.slice(0, 23) + "…" : n.path}
+                    </text>
+                    <text x={12} y={38} fontSize={10}
+                      fill="var(--color-text-muted)" style={{ pointerEvents: "none" }}>
+                      {n.id}
+                    </text>
+                    {step && (
+                      <>
+                        <rect x={NODE_W - 88} y={NODE_H - 22} width={76} height={14} rx={3}
+                          fill={meta.fg} />
+                        <text x={NODE_W - 50} y={NODE_H - 12} textAnchor="middle"
+                          fontSize={9} fontWeight={700} fill="white" letterSpacing="0.3"
+                          style={{ pointerEvents: "none" }}>
+                          {meta.label}
+                        </text>
+                        <text x={12} y={NODE_H - 12} fontSize={10}
+                          fontFamily="monospace" fill="var(--color-text-muted)"
+                          style={{ pointerEvents: "none" }}>
+                          {step.latency_ms ?? 0}ms
+                        </text>
+                      </>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* Edge legend */}
+          <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--color-text-muted)" }}>
+            {Object.entries(edgeColor).map(([k, c]) => (
+              <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 14, height: 2, background: c, display: "inline-block" }} />
+                {k}
+              </span>
+            ))}
+            <span style={{ marginLeft: "auto", fontFamily: "monospace" }}>
+              click a node to inspect its request, response, extracted, and injected values
+            </span>
+          </div>
+
+          {/* Selected node details */}
+          {selectedStep && (
+            <div style={{
+              padding: 14, borderRadius: 8,
+              border: `1px solid ${statusMeta[selectedStep.status].fg}`,
+              background: "var(--color-surface-2)",
+              display: "flex", flexDirection: "column", gap: 10,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 3,
+                  background: statusMeta[selectedStep.status].fg, color: "white", letterSpacing: 0.3,
+                }}>
+                  {statusMeta[selectedStep.status].label}
+                </span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  <strong>{selectedStep.method}</strong> {selectedStep.path}
+                </span>
+                <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace" }}>
+                  {selectedStep.latency_ms ?? 0}ms
+                </span>
+              </div>
+              {selectedStep.error && (
+                <div style={{ fontSize: 12, color: "var(--color-error)", fontFamily: "monospace" }}>
+                  {selectedStep.error}
+                </div>
+              )}
+              {selectedStep.blocked_by && selectedStep.blocked_by.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                  Blocked by: <strong style={{ color: "var(--color-error)" }}>{selectedStep.blocked_by.join(", ")}</strong>
+                </div>
+              )}
+              {selectedStep.injected && selectedStep.injected.length > 0 && (
+                <div>
+                  <p className="section-label" style={{ marginBottom: 4 }}>Injected from context</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {selectedStep.injected.map((inj, i) => (
+                      <div key={i} style={{ fontSize: 11, fontFamily: "monospace", color: "var(--color-text-muted)" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>{inj.location}.{inj.target_field}</span>
+                        {" ← "}
+                        <span style={{ color: inj.missing_vars.length ? "var(--color-error)" : "var(--color-success-text)" }}>
+                          {inj.resolved}
+                        </span>
+                        {inj.missing_vars.length > 0 && (
+                          <span style={{ color: "var(--color-error)", marginLeft: 8 }}>
+                            (missing: {inj.missing_vars.join(", ")})
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedStep.extracted && selectedStep.extracted.length > 0 && (
+                <div>
+                  <p className="section-label" style={{ marginBottom: 4 }}>Extracted into context</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {selectedStep.extracted.map((ex, i) => (
+                      <div key={i} style={{ fontSize: 11, fontFamily: "monospace", color: "var(--color-text-muted)" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>{ex.save_as}</span>
+                        {" = "}
+                        <span style={{ color: ex.found ? "var(--color-success-text)" : "var(--color-error)" }}>
+                          {ex.found ? JSON.stringify(ex.value) : "(not found in response)"}
+                        </span>
+                        {ex.json_path && (
+                          <span style={{ color: "var(--color-text-muted)", marginLeft: 8 }}>
+                            via <code>{ex.json_path}</code>
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedStep.response && (
+                <div>
+                  <p className="section-label" style={{ marginBottom: 4 }}>Mock response</p>
+                  <pre style={{
+                    fontFamily: "monospace", fontSize: 11,
+                    background: "var(--color-bg-base)", padding: "8px 10px", borderRadius: 6,
+                    border: "1px solid var(--color-border)", margin: 0,
+                    color: "var(--color-text-primary)", overflow: "auto", maxHeight: 200,
+                  }}>
+                    {JSON.stringify(selectedStep.response, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+type DetailTab = "mappings" | "history" | "validation" | "transform" | "chain";
 
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
@@ -704,6 +1052,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const tabs: { id: DetailTab; label: string; icon: React.ElementType }[] = [
     { id: "mappings", label: "Mappings", icon: Settings },
     { id: "transform", label: "Transform", icon: Wand2 },
+    { id: "chain", label: "Chain Test", icon: Network },
     { id: "history", label: "History", icon: History },
     { id: "validation", label: "Validation", icon: BarChart3 },
   ];
@@ -785,6 +1134,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
 
         {activeTab === "mappings" && <MappingsTable key={cfg.id} cfg={cfg} />}
         {activeTab === "transform" && <TransformPanel key={cfg.id} cfg={cfg} />}
+        {activeTab === "chain" && <ChainTestPanel key={cfg.id} cfg={cfg} />}
         {activeTab === "history" && <HistoryPanel configId={cfg.id} currentVersion={cfg.version} />}
         {activeTab === "validation" && <ValidationPanel configId={cfg.id} />}
       </div>

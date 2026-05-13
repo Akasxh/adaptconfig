@@ -13,8 +13,11 @@ from finspark.schemas.documents import (
     ExtractedAuth,
     ExtractedEndpoint,
     ExtractedField,
+    ExtractRule,
+    InjectRule,
     ParsedDocumentResult,
 )
+from finspark.services.chain.heuristics import enrich_chain_metadata
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
 
 logger = logging.getLogger(__name__)
@@ -79,6 +82,82 @@ def _extract_base_url_from_spec_text(text: str) -> str:
     except (json.JSONDecodeError, ValueError):
         pass
     return ""
+
+
+def _slug_from_path(path: str, method: str) -> str:
+    """Build a short snake_case id for an endpoint that has no LLM-supplied id."""
+    if not path:
+        return "endpoint"
+    # Strip leading slash, drop {placeholders}, keep last meaningful segment.
+    parts = [p for p in path.strip("/").split("/") if p and not p.startswith("{")]
+    base = parts[-1] if parts else "endpoint"
+    base = re.sub(r"[^a-zA-Z0-9_]+", "_", base).strip("_").lower() or "endpoint"
+    # Prepend method for non-GET so id reflects intent (post_orders vs get_orders).
+    if method.upper() not in ("GET", ""):
+        base = f"{method.lower()}_{base}"
+    return base
+
+
+def _endpoint_from_llm(ep: dict[str, Any], idx: int) -> ExtractedEndpoint:
+    """Build an ExtractedEndpoint from raw LLM output, handling the new chain fields.
+
+    Defensive — missing keys, wrong types, malformed extract/inject entries all
+    degrade to empty defaults instead of raising.
+    """
+    raw_extract = ep.get("extract") or []
+    raw_inject = ep.get("inject") or []
+
+    extract_rules: list[ExtractRule] = []
+    if isinstance(raw_extract, list):
+        for r in raw_extract:
+            if isinstance(r, dict) and r.get("save_as"):
+                extract_rules.append(ExtractRule(
+                    json_path=str(r.get("json_path") or r.get("save_as", "")),
+                    save_as=str(r["save_as"]),
+                ))
+
+    inject_rules: list[InjectRule] = []
+    if isinstance(raw_inject, list):
+        for r in raw_inject:
+            if isinstance(r, dict) and r.get("template"):
+                inject_rules.append(InjectRule(
+                    template=str(r["template"]),
+                    location=str(r.get("location") or "header").lower(),
+                    target_field=str(r.get("target_field") or ""),
+                ))
+
+    raw_deps = ep.get("depends_on") or []
+    deps = [str(d) for d in raw_deps if isinstance(d, str) and d.strip()] if isinstance(raw_deps, list) else []
+
+    return ExtractedEndpoint(
+        id=str(ep.get("id") or "").strip(),
+        path=ep.get("path", ""),
+        method=str(ep.get("method") or "GET").upper(),
+        description=ep.get("description", ""),
+        parameters=[],
+        is_mandatory=ep.get("is_mandatory", True),
+        depends_on=deps,
+        extract=extract_rules,
+        inject=inject_rules,
+    )
+
+
+def _ensure_unique_ids(endpoints: list[ExtractedEndpoint]) -> None:
+    """Fill in missing ids and de-duplicate collisions in place.
+
+    Chain construction code assumes every endpoint has a stable, unique id.
+    LLM output may skip ids or repeat them; this normalizes both cases.
+    """
+    seen: set[str] = set()
+    for idx, ep in enumerate(endpoints):
+        proposed = ep.id.strip() if ep.id else _slug_from_path(ep.path, ep.method)
+        candidate = proposed
+        n = 2
+        while candidate in seen or not candidate:
+            candidate = f"{proposed}_{n}" if proposed else f"endpoint_{idx}"
+            n += 1
+        ep.id = candidate
+        seen.add(candidate)
 
 
 class DocumentParser:
@@ -160,15 +239,12 @@ class DocumentParser:
         Augments LLM results with regex-extracted fields the LLM may have missed.
         """
         endpoints = [
-            ExtractedEndpoint(
-                path=ep.get("path", ""),
-                method=ep.get("method", "GET"),
-                description=ep.get("description", ""),
-                parameters=[],
-                is_mandatory=ep.get("is_mandatory", True),
-            )
-            for ep in llm_data.get("endpoints", [])
+            _endpoint_from_llm(ep, idx)
+            for idx, ep in enumerate(llm_data.get("endpoints", []))
+            if ep.get("path")
         ]
+        _ensure_unique_ids(endpoints)
+        enrich_chain_metadata(endpoints)
 
         fields = [
             ExtractedField(
@@ -259,7 +335,32 @@ Return a JSON object with exactly these keys:
   "services_identified": ["List of external service/API/provider names mentioned"],
   "base_url": "https://api.example.com/v1 — the actual API base URL string, or empty if none",
   "endpoints": [
-    {{"path": "/api/path", "method": "POST", "description": "What this endpoint does", "is_mandatory": true}}
+    {{
+      "id": "oauth_token",
+      "path": "/oauth/token",
+      "method": "POST",
+      "description": "What this endpoint does",
+      "is_mandatory": true,
+      "depends_on": [],
+      "extract": [
+        {{"json_path": "access_token", "save_as": "access_token"}}
+      ],
+      "inject": []
+    }},
+    {{
+      "id": "credit_score",
+      "path": "/credit-score",
+      "method": "POST",
+      "description": "Fetch credit score",
+      "is_mandatory": true,
+      "depends_on": ["oauth_token"],
+      "extract": [
+        {{"json_path": "enquiry_id", "save_as": "enquiry_id"}}
+      ],
+      "inject": [
+        {{"template": "Bearer {{{{access_token}}}}", "location": "header", "target_field": "Authorization"}}
+      ]
+    }}
   ],
   "fields": [
     {{"name": "field_name", "data_type": "string", "is_required": true, "source_section": "section name where field appears", "description": "field description", "sample_value": ""}}
@@ -279,6 +380,13 @@ Rules:
 - Include ALL endpoints and fields explicitly mentioned or strongly implied
 - base_url MUST be a real absolute URL starting with http:// or https://; if the document is an OpenAPI spec, copy the first servers[].url verbatim. Do NOT put a description sentence here.
 - sla_requirements values must be strings (e.g. "200ms", "99.9%"); omit keys not found
+- For each endpoint:
+  - id: short snake_case identifier unique within the document (e.g., "oauth_token", "credit_score", "credit_report"). Use this to express dependencies.
+  - depends_on: list of endpoint ids whose response this endpoint needs (typically the auth endpoint plus any endpoint that produces a value referenced in this one's URL or body).
+  - extract: values to pull out of THIS endpoint's response so later endpoints can use them. json_path uses dotted keys ("access_token", "data.enquiry_id"). save_as is the context variable name.
+  - inject: values pulled from context and placed INTO this endpoint's request. template is a Mustache string (e.g., "Bearer {{{{access_token}}}}"). location is one of header/query/path/body. target_field is the key in that location (e.g., "Authorization", or "enquiry_id" for path parameters).
+  - If the endpoint's path contains {{placeholders}}, those almost always need a corresponding inject from an earlier endpoint.
+  - Auth endpoints (OAuth/token) typically extract access_token; subsequent endpoints inject it as the Authorization header.
 - Return ONLY valid JSON, no markdown fences"""
 
         truncated = text[:15000]
@@ -296,16 +404,12 @@ Rules:
             inferred_type = self._normalize_doc_type(llm_data.get("doc_type", "brd"))
 
             endpoints = [
-                ExtractedEndpoint(
-                    path=ep.get("path", ""),
-                    method=ep.get("method", "GET"),
-                    description=ep.get("description", ""),
-                    parameters=[],
-                    is_mandatory=ep.get("is_mandatory", True),
-                )
-                for ep in llm_data.get("endpoints", [])
+                _endpoint_from_llm(ep, idx)
+                for idx, ep in enumerate(llm_data.get("endpoints", []))
                 if ep.get("path")
             ]
+            _ensure_unique_ids(endpoints)
+            enrich_chain_metadata(endpoints)
 
             fields = [
                 ExtractedField(
@@ -605,6 +709,10 @@ Rules:
         # First validated URL becomes the canonical base_url for downstream use.
         primary_base_url = next((u for u in base_urls if _looks_like_url(u)), "")
         services = [info.get("title", "API Service")]
+
+        # Assign ids + run heuristic backfill so YAML uploads also carry chain metadata.
+        _ensure_unique_ids(endpoints)
+        enrich_chain_metadata(endpoints)
 
         return ParsedDocumentResult(
             doc_type="api_spec",

@@ -42,4 +42,5 @@ class SimulationResponse(BaseModel):
     failed_tests: int
     duration_ms: int | None = None
     steps: list[SimulationStepResult] = []
+    chain_run: dict[str, Any] | None = None  # Populated when test_type=="chain": graph, edges, cascade analysis.
     created_at: datetime

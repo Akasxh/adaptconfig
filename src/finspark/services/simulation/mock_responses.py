@@ -106,17 +106,30 @@ class _CIBILMock(_AdapterMock):
         seed = _seed_from(pan)
         score = 300 + (seed % 600)
 
+        # Auth endpoints feed downstream chain calls with access_token.
+        if "/oauth" in endpoint_path or "/token" in endpoint_path or "/auth" in endpoint_path:
+            return cls._oauth_token(seed)
         if "/bulk" in endpoint_path:
             return cls._bulk_inquiry(seed, pan)
         if "/credit-report" in endpoint_path or "/reports" in endpoint_path:
             return cls._credit_report(seed, score, pan)
-        # Default: credit score
+        # Default: credit score (also stamps enquiry_id so chains can fetch the report)
         return cls._credit_score(seed, score)
+
+    @classmethod
+    def _oauth_token(cls, seed: int) -> dict[str, Any]:
+        return {
+            "token_type": "Bearer",
+            "access_token": f"cibil-mock-{seed % 10**8:08x}",
+            "expires_in": 3600,
+            "scope": "credit_score credit_report",
+        }
 
     @classmethod
     def _credit_score(cls, seed: int, score: int) -> dict[str, Any]:
         return {
             "status": "success",
+            "enquiry_id": f"ENQ{seed % 9999999:07d}",
             "credit_score": score,
             "score_version": "CIBIL_V3",
             "credit_rank": "1" if score > 750 else ("2" if score > 650 else "5"),

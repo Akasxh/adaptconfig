@@ -183,6 +183,10 @@ export const documentsApi = {
     api
       .delete<APIResponse<{ id: string; deleted: boolean }>>(`/api/v1/documents/${id}`)
       .then((r) => r.data),
+  reanalyze: (id: string) =>
+    api
+      .post<APIResponse<{ id: string; status: string }>>(`/api/v1/documents/${id}/reanalyze`)
+      .then((r) => r.data),
 };
 
 export const configurationsApi = {

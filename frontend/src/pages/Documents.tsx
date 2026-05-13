@@ -10,6 +10,7 @@ import {
   Layers,
   Link2,
   Loader2,
+  RefreshCw,
   Search,
   Shield,
   Trash2,
@@ -433,6 +434,20 @@ export default function Documents() {
     },
   });
 
+  const reanalyzeMutation = useMutation({
+    mutationFn: (id: string) => documentsApi.reanalyze(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      toast("Re-analysis started — chain metadata will populate in a few seconds.", "success");
+    },
+    onError: (err: unknown) => {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to start re-analysis.";
+      toast(detail, "error");
+    },
+  });
+
   const onDrop = useCallback(
     (accepted: File[]) => {
       setUploadError(null);
@@ -636,14 +651,30 @@ export default function Documents() {
                       {formatDate(doc.created_at)}
                     </td>
                     <td style={{ paddingRight: "1.25rem", textAlign: "right" }}>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(doc); }}
-                        aria-label={`Delete ${doc.filename}`}
-                        style={{ background: "none", border: "none", cursor: "pointer", padding: "0.25rem", borderRadius: "0.25rem", color: isHovered ? "var(--color-error-text)" : "transparent", transition: "color 120ms" }}
-                      >
-                        <Trash2 style={{ width: 14, height: 14 }} />
-                      </button>
+                      <div style={{ display: "inline-flex", gap: 4 }}>
+                        <button
+                          type="button"
+                          title="Re-analyze with LLM — repopulates dependency metadata for chain testing"
+                          aria-label={`Re-analyze ${doc.filename}`}
+                          disabled={reanalyzeMutation.isPending && reanalyzeMutation.variables === doc.id}
+                          onClick={(e) => { e.stopPropagation(); reanalyzeMutation.mutate(doc.id); }}
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: "0.25rem", borderRadius: "0.25rem", color: isHovered ? "var(--color-brand-light)" : "transparent", transition: "color 120ms" }}
+                        >
+                          {reanalyzeMutation.isPending && reanalyzeMutation.variables === doc.id ? (
+                            <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+                          ) : (
+                            <RefreshCw style={{ width: 14, height: 14 }} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setConfirmDelete(doc); }}
+                          aria-label={`Delete ${doc.filename}`}
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: "0.25rem", borderRadius: "0.25rem", color: isHovered ? "var(--color-error-text)" : "transparent", transition: "color 120ms" }}
+                        >
+                          <Trash2 style={{ width: 14, height: 14 }} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

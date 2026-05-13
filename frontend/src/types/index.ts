@@ -136,6 +136,56 @@ export interface SimulationStepResult {
 }
 
 // Matches SimulationResponse Pydantic schema
+export interface ChainStepResult {
+  id: string;
+  path: string;
+  method: string;
+  description?: string;
+  status: "passed" | "failed" | "blocked_by_upstream" | "mock_contract_violation";
+  error: string | null;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown> | null;
+  extracted?: Array<{ json_path: string; save_as: string; value: unknown; found: boolean }>;
+  injected?: Array<{ template: string; location: string; target_field: string; resolved: string; missing_vars: string[] }>;
+  latency_ms?: number;
+  blocked_by?: string[];
+}
+
+export interface ChainGraphNode {
+  id: string;
+  path: string;
+  method: string;
+  description?: string;
+  depends_on: string[];
+  extract: Array<{ json_path: string; save_as: string }>;
+  inject: Array<{ template: string; location: string; target_field: string }>;
+}
+
+export interface ChainGraphEdge {
+  source: string;
+  target: string;
+  kind: "data" | "auth" | "polling" | "compensates";
+  via?: string;
+}
+
+export interface ChainRun {
+  ok: boolean;
+  summary: string;
+  steps: ChainStepResult[];
+  context_final?: Record<string, unknown>;
+  blocked_root: string | null;
+  cycle_error?: string | null;
+  counts?: {
+    total: number; passed: number; failed: number;
+    mock_contract_violation: number; blocked_by_upstream: number;
+  };
+  graph?: {
+    nodes: ChainGraphNode[];
+    edges: ChainGraphEdge[];
+    layers: string[][];
+  };
+}
+
 export interface Simulation {
   id: string;
   configuration_id: string;
@@ -146,6 +196,7 @@ export interface Simulation {
   failed_tests: number;
   duration_ms?: number;
   steps?: SimulationStepResult[];
+  chain_run?: ChainRun | null;
   created_at: string;
   // legacy optional fields kept for backward compat
   name?: string;

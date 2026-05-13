@@ -247,6 +247,105 @@ async def get_document(
     )
 
 
+@router.post("/{document_id}/reanalyze", response_model=APIResponse[dict])
+async def reanalyze_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = require_role("admin", "editor"),
+) -> APIResponse[dict]:
+    """Re-run the LLM parser on an existing document.
+
+    Used after the parser is extended (e.g., to extract chain metadata
+    like depends_on/extract/inject). Existing documents won't have the
+    new fields until re-parsed; this is the on-demand path so users only
+    burn LLM budget on docs they care about.
+    """
+    stmt = select(Document).where(
+        Document.id == document_id,
+        Document.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not settings.ai_enabled or not (settings.openai_api_key or settings.gemini_api_key):
+        raise HTTPException(
+            status_code=400,
+            detail="LLM is not configured — re-analysis requires an LLM provider.",
+        )
+
+    # Pull the raw file from disk so we re-parse from the source, not the prior summary.
+    file_path = settings.upload_dir / tenant.tenant_id / doc.filename
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=410,
+            detail="Original file no longer available — re-upload the document.",
+        )
+
+    try:
+        raw_bytes = file_path.read_bytes()
+        ext = file_path.suffix.lower().lstrip(".")
+        if ext in ("yaml", "yml", "json"):
+            raw_text = raw_bytes.decode("utf-8", errors="replace")
+        elif ext == "pdf":
+            from pypdf import PdfReader
+            import io
+            raw_text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(raw_bytes)).pages)
+        elif ext == "docx":
+            from docx import Document as DocxDocument
+            import io
+            raw_text = "\n".join(p.text for p in DocxDocument(io.BytesIO(raw_bytes)).paragraphs if p.text.strip())
+        else:
+            raw_text = raw_bytes.decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Could not read source file: {exc}") from exc
+
+    doc.status = "parsing"
+    await db.flush()
+
+    doc_id = doc.id
+    tenant_id = tenant.tenant_id
+    filename = doc.filename
+    doc_type = doc.doc_type
+
+    async def _reparse_in_background() -> None:
+        from finspark.core.database import async_session_factory
+        from finspark.services.llm.client import get_llm_client
+
+        try:
+            llm_client = get_llm_client()
+            result = await parser.parse_with_llm(raw_text, filename, llm_client)
+            logger.info("document_reanalyzed_via_llm filename=%s", filename)
+        except Exception:  # noqa: BLE001
+            logger.warning("LLM reanalyze failed for %s, keeping prior parse", filename, exc_info=True)
+            return
+
+        async with async_session_factory() as bg_db:
+            stmt2 = select(Document).where(Document.id == doc_id)
+            row = (await bg_db.execute(stmt2)).scalar_one_or_none()
+            if row:
+                row.parsed_result = result.model_dump_json()
+                row.raw_text = result.summary[:5000]
+                row.status = "parsed"
+                await bg_db.commit()
+                logger.info("reanalyze_complete doc_id=%s", doc_id)
+
+        try:
+            wd = {"tenant_id": tenant_id, "document_id": doc_id, "filename": filename, "doc_type": doc_type}
+            await events.emit(events.DOCUMENT_PARSED, wd)
+            await deliver_event(tenant_id, events.DOCUMENT_PARSED, wd)
+        except Exception:  # noqa: BLE001
+            logger.warning("reanalyze_webhook_failed doc_id=%s", doc_id, exc_info=True)
+
+    asyncio.create_task(_reparse_in_background())
+
+    return APIResponse(
+        data={"id": doc.id, "status": "parsing"},
+        message="Re-analysis started — refresh in a few seconds.",
+    )
+
+
 @router.delete("/{document_id}", response_model=APIResponse[dict])
 async def delete_document(
     document_id: str,

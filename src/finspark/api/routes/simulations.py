@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,7 +20,9 @@ from finspark.core.audit import AuditService
 from finspark.core.database import async_session_factory, get_db
 
 logger = logging.getLogger(__name__)
+from finspark.models.adapter import Adapter, AdapterVersion
 from finspark.models.configuration import Configuration
+from finspark.models.document import Document
 from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, TenantContext
 from finspark.schemas.simulations import (
@@ -103,19 +106,29 @@ async def run_simulation(
     db.add(simulation)
     await db.flush()
 
-    # Run simulation — use LLM-powered validation when AI is enabled
-    use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
-    if use_llm:
-        try:
-            from finspark.services.llm.client import get_llm_client
-
-            llm_client = get_llm_client()
-            steps = await simulator.validate_config_llm(full_config, llm_client)
-        except Exception:
-            logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
-            steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
+    # Branch: chain test runs the new DAG executor, not the per-endpoint simulator.
+    chain_run: dict[str, Any] | None = None
+    if request.test_type == "chain":
+        steps = await _run_chain_simulation(
+            db, config, full_config, simulation, tenant
+        )
+        # _run_chain_simulation stashes the full chain run dict on the simulation
+        # row's results field; remember it for the API response.
+        chain_run = safe_json_loads(simulation.results or "{}", {}).get("chain_run")
     else:
-        steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
+        # Run simulation — use LLM-powered validation when AI is enabled
+        use_llm = settings.ai_enabled and (bool(settings.openai_api_key) or bool(settings.gemini_api_key))
+        if use_llm:
+            try:
+                from finspark.services.llm.client import get_llm_client
+
+                llm_client = get_llm_client()
+                steps = await simulator.validate_config_llm(full_config, llm_client)
+            except Exception:
+                logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
+                steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
+        else:
+            steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
 
     # Save results
     total = len(steps)
@@ -128,7 +141,16 @@ async def run_simulation(
     simulation.passed_tests = passed
     simulation.failed_tests = failed
     simulation.duration_ms = total_duration
-    simulation.results = json.dumps([s.model_dump() for s in steps])
+    if chain_run is not None:
+        # Preserve the full chain run (graph, edges, per-step request/response,
+        # cascade analysis) for the DAG visualization to render.
+        simulation.results = json.dumps({
+            "test_type": "chain",
+            "steps": [s.model_dump() for s in steps],
+            "chain_run": chain_run,
+        })
+    else:
+        simulation.results = json.dumps([s.model_dump() for s in steps])
 
     # Save individual steps
     for i, step in enumerate(steps):
@@ -191,6 +213,7 @@ async def run_simulation(
             failed_tests=failed,
             duration_ms=total_duration,
             steps=steps,
+            chain_run=chain_run,
             created_at=simulation.created_at,
         ),
         message=f"Simulation {simulation.status}: {passed}/{total} tests passed",
@@ -214,8 +237,15 @@ async def get_simulation(
         raise HTTPException(status_code=404, detail="Simulation not found")
 
     steps = []
+    chain_run = None
     if simulation.results:
-        steps = [SimulationStepResult(**s) for s in safe_json_loads(simulation.results, [])]
+        raw = safe_json_loads(simulation.results, [])
+        if isinstance(raw, dict) and raw.get("test_type") == "chain":
+            # Chain runs persist {test_type, steps, chain_run}; flat list otherwise.
+            steps = [SimulationStepResult(**s) for s in raw.get("steps", [])]
+            chain_run = raw.get("chain_run")
+        elif isinstance(raw, list):
+            steps = [SimulationStepResult(**s) for s in raw]
 
     return APIResponse(
         data=SimulationResponse(
@@ -228,6 +258,7 @@ async def get_simulation(
             failed_tests=simulation.failed_tests,
             duration_ms=simulation.duration_ms,
             steps=steps,
+            chain_run=chain_run,
             created_at=simulation.created_at,
         ),
     )
@@ -431,3 +462,115 @@ async def stream_simulation(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Chain (DAG) simulation ───────────────────────────────────────────────────
+
+
+async def _run_chain_simulation(
+    db: AsyncSession,
+    config: Configuration,
+    full_config: dict[str, Any],
+    simulation: Simulation,
+    tenant: TenantContext,
+) -> list[SimulationStepResult]:
+    """Run a DAG-based chain simulation and return per-step results.
+
+    Loads chain metadata (depends_on / extract / inject) from the linked
+    Document's parsed_result — that's where the LLM parser populates it.
+    Falls back to config's endpoint list if no document is linked (heuristics
+    still derive auth + path-template dependencies).
+
+    Persists the full chain run dict (graph + edges + cascade analysis) onto
+    simulation.results so the UI DAG view has everything it needs to render.
+    """
+    from finspark.services.chain.executor import run_chain
+    from finspark.services.chain.graph import build_chain_graph
+    from finspark.services.chain.heuristics import normalize_endpoints_for_chain
+
+    # 1. Resolve endpoint list. Prefer the linked document (LLM-populated chain
+    # metadata); fall back to the adapter-derived endpoints in full_config.
+    raw_endpoints: list[dict[str, Any]] = []
+    if config.document_id:
+        doc_res = await db.execute(
+            select(Document).where(
+                Document.id == config.document_id,
+                Document.tenant_id == tenant.tenant_id,
+            )
+        )
+        doc = doc_res.scalar_one_or_none()
+        if doc and doc.parsed_result:
+            parsed = safe_json_loads(doc.parsed_result, {})
+            raw_endpoints = list(parsed.get("endpoints", []) or [])
+
+    if not raw_endpoints:
+        raw_endpoints = list(full_config.get("endpoints", []) or [])
+
+    # Normalize: assign missing ids, run heuristic backfill. Idempotent on
+    # already-normalized data, so re-analyzed docs keep their LLM-extracted
+    # depends_on/extract/inject untouched.
+    endpoints = normalize_endpoints_for_chain(raw_endpoints)
+
+    # 3. Adapter name + base_url for mock routing.
+    adapter_name = ""
+    if config.adapter_version_id:
+        av_res = await db.execute(
+            select(AdapterVersion).where(AdapterVersion.id == config.adapter_version_id)
+        )
+        av = av_res.scalar_one_or_none()
+        if av:
+            adp_res = await db.execute(select(Adapter).where(Adapter.id == av.adapter_id))
+            adp = adp_res.scalar_one_or_none()
+            if adp:
+                adapter_name = adp.name
+    base_url = full_config.get("base_url", "") or ""
+
+    # 4. Execute.
+    graph = build_chain_graph(endpoints)
+    chain_run = run_chain(graph, adapter_name=adapter_name, base_url=base_url)
+
+    # 5. Stash the full chain run onto the simulation row (results column).
+    # Caller will overwrite this if it builds a richer payload — but we want
+    # the chain_run available even if the caller's wrapper json.dumps fails.
+    chain_run["graph"] = {
+        "nodes": [
+            {
+                "id": n.id, "path": n.path, "method": n.method,
+                "description": n.description,
+                "depends_on": n.depends_on,
+                "extract": n.extract, "inject": n.inject,
+            }
+            for n in graph.nodes.values()
+        ],
+        "edges": [{"source": e.source, "target": e.target, "kind": e.kind, "via": e.via} for e in graph.edges],
+        "layers": graph.layers,
+    }
+    simulation.results = json.dumps({"test_type": "chain", "chain_run": chain_run})
+
+    # 6. Convert chain steps -> SimulationStepResult for the route's downstream
+    # bookkeeping (counts, per-step DB rows, audit log). Stuff the rich payload
+    # into actual_response so it survives the round-trip.
+    status_map = {
+        "passed": "passed",
+        "failed": "failed",
+        "blocked_by_upstream": "skipped",
+        "mock_contract_violation": "failed",
+    }
+    results: list[SimulationStepResult] = []
+    for s in chain_run.get("steps", []):
+        results.append(SimulationStepResult(
+            step_name=f"{s['method']} {s['path']}",
+            status=status_map.get(s["status"], "error"),
+            request_payload={"injected": s.get("injected") or [], "resolved": s.get("request") or {}},
+            expected_response={},
+            actual_response={
+                "response": s.get("response"),
+                "extracted": s.get("extracted") or [],
+                "blocked_by": s.get("blocked_by") or [],
+                "chain_status": s["status"],
+            },
+            duration_ms=int(s.get("latency_ms") or 0),
+            confidence_score=1.0 if s["status"] == "passed" else 0.0,
+            error_message=s.get("error"),
+        ))
+    return results
