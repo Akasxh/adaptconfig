@@ -23,6 +23,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "jsonschema>=4.20.0",
     "alembic>=1.18.4",
+    "mcp[cli]>=1.27.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,9 @@ dev = [
     "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
+
+[project.scripts]
+adaptconfig-mcp = "finspark.mcp.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
