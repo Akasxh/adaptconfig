@@ -23,6 +23,7 @@ import finspark.models.configuration  # noqa: F401
 import finspark.models.document  # noqa: F401
 import finspark.models.simulation  # noqa: F401
 import finspark.models.tenant  # noqa: F401
+import finspark.models.user  # noqa: F401
 import finspark.models.webhook  # noqa: F401
 from finspark.core.database import get_db
 from finspark.main import app
@@ -89,9 +90,13 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
-    # Patch async_session_factory in the simulations route so SSE generators
-    # (which open fresh sessions) use the same test in-memory DB.
-    with patch("finspark.api.routes.simulations.async_session_factory", test_session_factory):
+    # Patch async_session_factory in the simulations route AND webhook
+    # delivery so any background-task DB work uses the in-memory test DB
+    # instead of the on-disk SQLite file (which has no schema during tests).
+    with (
+        patch("finspark.api.routes.simulations.async_session_factory", test_session_factory),
+        patch("finspark.services.webhook_delivery.async_session_factory", test_session_factory),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             ac.headers["X-Tenant-ID"] = "test-tenant"

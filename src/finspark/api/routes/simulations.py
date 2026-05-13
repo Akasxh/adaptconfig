@@ -27,6 +27,7 @@ from finspark.schemas.simulations import (
     SimulationResponse,
     SimulationStepResult,
 )
+from finspark.services.chain import ChainCycleError, ChainExecutor
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
 
@@ -103,19 +104,33 @@ async def run_simulation(
     db.add(simulation)
     await db.flush()
 
-    # Run simulation — use LLM-powered validation when AI is enabled
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
-    if use_llm:
-        try:
-            from finspark.services.llm.client import get_llm_client
+    # Chain configs go through the rule-based simulator so the chain executor
+    # actually runs. The LLM validator returns a static 7-dimension analysis
+    # and would not exercise extract/inject, so we skip it for chain configs.
+    chain_endpoints = full_config.get("endpoints", []) if isinstance(full_config, dict) else []
+    is_chain_config = ChainExecutor.is_chain(chain_endpoints)
 
-            llm_client = get_llm_client()
-            steps = await simulator.validate_config_llm(full_config, llm_client)
-        except Exception:
-            logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
-            steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
-    else:
-        steps = await asyncio.to_thread(simulator.run_simulation, full_config, test_type=request.test_type)
+    use_llm = settings.ai_enabled and bool(settings.gemini_api_key) and not is_chain_config
+    try:
+        if use_llm:
+            try:
+                from finspark.services.llm.client import get_llm_client
+
+                llm_client = get_llm_client()
+                steps = await simulator.validate_config_llm(full_config, llm_client)
+            except Exception:
+                logger.warning("LLM simulation failed, falling back to rule-based", exc_info=True)
+                steps = await asyncio.to_thread(
+                    simulator.run_simulation, full_config, test_type=request.test_type
+                )
+        else:
+            steps = await asyncio.to_thread(
+                simulator.run_simulation, full_config, test_type=request.test_type
+            )
+    except ChainCycleError as exc:
+        await db.delete(simulation)
+        await db.flush()
+        raise HTTPException(status_code=400, detail=f"Invalid endpoint chain: {exc}") from exc
 
     # Save results
     total = len(steps)

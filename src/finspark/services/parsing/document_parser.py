@@ -262,13 +262,32 @@ Rules:
                 if rf.name not in llm_field_names:
                     fields.append(rf)
 
-            auth = [
-                ExtractedAuth(
-                    auth_type=a.get("auth_type", "api_key"),
-                    details=a.get("details", {}),
+            auth: list[ExtractedAuth] = []
+            for a in llm_data.get("auth_requirements", []):
+                raw_details = a.get("details", {})
+                details_norm: dict[str, str] = (
+                    {
+                        k: (
+                            ", ".join(str(item) for item in v)
+                            if isinstance(v, list)
+                            else (
+                                ", ".join(f"{ik}={iv}" for ik, iv in v.items())
+                                if isinstance(v, dict)
+                                else str(v)
+                            )
+                        )
+                        for k, v in raw_details.items()
+                        if v is not None
+                    }
+                    if isinstance(raw_details, dict)
+                    else {}
                 )
-                for a in llm_data.get("auth_requirements", [])
-            ]
+                auth.append(
+                    ExtractedAuth(
+                        auth_type=a.get("auth_type", "api_key"),
+                        details=details_norm,
+                    )
+                )
 
             sla_raw = llm_data.get("sla_requirements", {})
             sla: dict[str, str] = (

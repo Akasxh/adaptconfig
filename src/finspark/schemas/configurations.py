@@ -57,6 +57,23 @@ class GenerateConfigRequest(BaseModel):
     auto_map: bool = True  # Use AI for field mapping
 
 
+class ChainEndpointInfo(BaseModel):
+    """Minimal chain-runtime view of a configured endpoint.
+
+    Surfaced on :class:`ConfigurationResponse` only when the LLM-generated
+    config contains chain metadata (``id`` + ``depends_on`` + optional
+    ``extract`` / ``inject``). Single-endpoint configs and configs without
+    any ``depends_on`` get an empty ``chain`` list.
+    """
+
+    id: str
+    path: str
+    method: str = "POST"
+    depends_on: list[str] = []
+    extract: list[dict[str, Any]] = []
+    inject: list[dict[str, Any]] = []
+
+
 class ConfigurationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -69,6 +86,7 @@ class ConfigurationResponse(BaseModel):
     field_mappings: list[FieldMapping] = []
     transformation_rules: list[TransformationRule] = []
     hooks: list[HookConfig] = []
+    chain: list[ChainEndpointInfo] = []
     created_at: datetime
     updated_at: datetime
 

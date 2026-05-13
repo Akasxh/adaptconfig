@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 from finspark.schemas.simulations import SimulationStepResult
+from finspark.services.chain import ChainExecutor
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
 
 logger = logging.getLogger(__name__)
@@ -128,11 +129,15 @@ class IntegrationSimulator:
         # Step 2: Validate field mappings
         steps.append(self._test_field_mappings(config))
 
-        # Step 3: Test each endpoint
+        # Step 3: Test each endpoint -- swap the per-endpoint loop for the
+        # chain executor when the config opts in via ``depends_on`` metadata.
         endpoints = config.get("endpoints", [])
-        for endpoint in endpoints:
-            if endpoint.get("enabled", True):
-                steps.append(self._test_endpoint(endpoint, config))
+        if ChainExecutor.is_chain(endpoints):
+            steps.extend(self._run_chain(endpoints, config))
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    steps.append(self._test_endpoint(endpoint, config))
 
         # Step 4: Test authentication
         steps.append(self._test_auth_config(config))
@@ -158,9 +163,14 @@ class IntegrationSimulator:
         yield self._test_config_structure(config)
         yield self._test_field_mappings(config)
 
-        for endpoint in config.get("endpoints", []):
-            if endpoint.get("enabled", True):
-                yield self._test_endpoint(endpoint, config)
+        endpoints = config.get("endpoints", [])
+        if ChainExecutor.is_chain(endpoints):
+            for chain_step in self._run_chain(endpoints, config):
+                yield chain_step
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    yield self._test_endpoint(endpoint, config)
 
         yield self._test_auth_config(config)
         yield self._test_hooks(config)
@@ -176,14 +186,23 @@ class IntegrationSimulator:
         step_timeout_seconds: int = 30,
     ) -> AsyncGenerator[SimulationStepResult, None]:
         """Yield simulation steps asynchronously, applying a per-step timeout."""
+        endpoints = config.get("endpoints", [])
+        endpoint_step_fns: list[Any] = []
+        if ChainExecutor.is_chain(endpoints):
+            chain_steps = self._run_chain(endpoints, config)
+            for step in chain_steps:
+                endpoint_step_fns.append((lambda s: lambda: s)(step))
+        else:
+            for endpoint in endpoints:
+                if endpoint.get("enabled", True):
+                    endpoint_step_fns.append(
+                        (lambda ep: lambda: self._test_endpoint(ep, config))(endpoint)
+                    )
+
         step_fns = [
             lambda: self._test_config_structure(config),
             lambda: self._test_field_mappings(config),
-            *[
-                (lambda ep: lambda: self._test_endpoint(ep, config))(endpoint)
-                for endpoint in config.get("endpoints", [])
-                if endpoint.get("enabled", True)
-            ],
+            *endpoint_step_fns,
             lambda: self._test_auth_config(config),
             lambda: self._test_hooks(config),
         ]
@@ -592,3 +611,18 @@ Return only the JSON object. No markdown, no prose outside the JSON."""
             if source:
                 request[source] = MockAPIServer.MOCK_DATA.get(source, f"sample_{source}")
         return request
+
+    def _run_chain(
+        self,
+        endpoints: list[dict[str, Any]],
+        config: dict[str, Any],
+    ) -> list[SimulationStepResult]:
+        """Execute the chain runtime in place of the per-endpoint loop.
+
+        Lets :class:`ChainCycleError` propagate so the route layer can convert
+        it into a 400 -- callers should not see a generic 500 when they hand
+        us an invalid graph.
+        """
+        executor = ChainExecutor(self.mock_server)
+        base_request = self._build_sample_request(config)
+        return executor.run(endpoints, config, base_request=base_request)

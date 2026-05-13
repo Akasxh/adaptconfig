@@ -2,6 +2,7 @@ import { useToast } from "@/components/Toast";
 import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
 import type {
   Adapter,
+  ChainEndpointInfo,
   ConfigDiffItem,
   ConfigDiffResponse,
   ConfigHistoryEntry,
@@ -13,6 +14,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowDown,
   BarChart3,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +23,7 @@ import {
   Download,
   GitCompare,
   History,
+  Link2,
   Loader2,
   PlayCircle,
   Plus,
@@ -453,6 +456,131 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
 
 type DetailTab = "mappings" | "history" | "validation";
 
+// ── Chain Panel ──────────────────────────────────────────────────────────────
+// Compact vertical chain `[A] -> [B] -> [C]` that surfaces the LLM-generated
+// `id` / `depends_on` / `extract` / `inject` placeholders. Renders only when
+// the backend actually populates `cfg.chain` (>=2 endpoints with depends_on);
+// single-endpoint configs show nothing here.
+
+function describeExtract(rule: ChainEndpointInfo["extract"][number]): string {
+  const path = (rule.path ?? rule.from ?? rule.source ?? "") as string;
+  const name = (rule.name ?? rule.as ?? rule.target ?? path) as string;
+  if (!path && !name) return "";
+  if (name && path && name !== path) return `${name} ← ${path}`;
+  return path || name;
+}
+
+function describeInject(rule: ChainEndpointInfo["inject"][number]): string {
+  const target = (rule.to ?? rule.target ?? rule.into ?? rule.name ?? "") as string;
+  const source = (rule.from ?? rule.source ?? rule.ref ?? "") as string;
+  if (!target) return "";
+  return source ? `${target} ← ${source}` : target;
+}
+
+function ChainPanel({ chain }: { chain: ChainEndpointInfo[] }) {
+  if (!chain || chain.length < 2) return null;
+  return (
+    <div>
+      <p
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          color: "var(--color-text-muted)",
+          marginBottom: 12,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <Link2 style={{ width: 11, height: 11 }} />
+        Endpoint chain
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        {chain.map((step, idx) => {
+          const extracts = step.extract.map(describeExtract).filter(Boolean);
+          const isLast = idx === chain.length - 1;
+          return (
+            <div key={`${step.id}-${idx}`} style={{ display: "flex", flexDirection: "column" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: "var(--color-bg-elevated)",
+                  border: "1px solid var(--color-border)",
+                }}
+              >
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--color-brand-light)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  [{step.id}]
+                </span>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  {step.method.toUpperCase()}
+                </span>
+                <span
+                  className="mono"
+                  style={{ fontSize: 12, color: "var(--color-text-primary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={step.path}
+                >
+                  {step.path || "(no path)"}
+                </span>
+                {step.depends_on.length > 0 && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "var(--color-text-muted)",
+                    }}
+                    title={`depends on: ${step.depends_on.join(", ")}`}
+                  >
+                    after {step.depends_on.join(", ")}
+                  </span>
+                )}
+              </div>
+              {!isLast && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 2,
+                    padding: "4px 0 4px 18px",
+                    fontSize: 11,
+                    color: "var(--color-text-muted)",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {extracts.length > 0 && (
+                    <span className="mono">
+                      extract: {extracts.join(", ")}
+                    </span>
+                  )}
+                  {chain[idx + 1].inject.length > 0 && (
+                    <span className="mono">
+                      inject → {chain[idx + 1].inject.map(describeInject).filter(Boolean).join(", ") || "(none)"}
+                    </span>
+                  )}
+                  <ArrowDown style={{ width: 12, height: 12, marginTop: 2, color: "var(--color-text-muted)" }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
   const { toast } = useToast();
@@ -496,6 +624,9 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         </p>
         <StatusStepper status={cfg.status} />
       </div>
+
+      {/* Endpoint chain (only renders for chain configs) */}
+      {cfg.chain && cfg.chain.length >= 2 && <ChainPanel chain={cfg.chain} />}
 
       {/* Export */}
       <div>

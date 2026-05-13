@@ -34,6 +34,7 @@ from finspark.schemas.configurations import (
     BatchConfigRequest,
     BatchSimulationItem,
     BatchValidationItem,
+    ChainEndpointInfo,
     ConfigDiffResponse,
     ConfigHistoryEntry,
     ConfigSummaryResponse,
@@ -49,6 +50,7 @@ from finspark.schemas.configurations import (
     TransitionResponse,
     VersionComparisonResponse,
 )
+from finspark.services.chain import is_chain
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
@@ -62,6 +64,58 @@ from finspark.services.webhook_delivery import deliver_event
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
+
+
+def _chain_from_full_config(full_config_json: str | None) -> list[ChainEndpointInfo]:
+    """Surface chain-runtime metadata from the persisted ``full_config`` JSON.
+
+    Returns an empty list when the config has no endpoints, fewer than two
+    endpoints, or no ``depends_on`` links -- the chain panel only renders
+    once a config genuinely participates in the chain runtime.
+    """
+    if not full_config_json:
+        return []
+    try:
+        full_config = json.loads(full_config_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(full_config, dict):
+        return []
+    raw_endpoints = full_config.get("endpoints") or []
+    if not isinstance(raw_endpoints, list) or not is_chain(raw_endpoints):
+        return []
+
+    chain: list[ChainEndpointInfo] = []
+    for index, ep in enumerate(raw_endpoints):
+        if not isinstance(ep, dict):
+            continue
+        eid = str(ep.get("id") or f"step_{index}")
+        depends_on = ep.get("depends_on") or []
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+        elif not isinstance(depends_on, list):
+            depends_on = []
+        extract = ep.get("extract") or []
+        if isinstance(extract, dict):
+            extract = [extract]
+        elif not isinstance(extract, list):
+            extract = []
+        inject = ep.get("inject") or []
+        if isinstance(inject, dict):
+            inject = [inject]
+        elif not isinstance(inject, list):
+            inject = []
+        chain.append(
+            ChainEndpointInfo(
+                id=eid,
+                path=str(ep.get("path", "")),
+                method=str(ep.get("method", "POST")),
+                depends_on=[str(d) for d in depends_on if d],
+                extract=[e for e in extract if isinstance(e, dict)],
+                inject=[i for i in inject if isinstance(i, dict)],
+            )
+        )
+    return chain
 
 CONFIG_TEMPLATES: list[ConfigTemplateResponse] = [
     ConfigTemplateResponse(
@@ -696,6 +750,7 @@ async def generate_configuration(
             status=configuration.status,
             version=configuration.version,
             field_mappings=[FieldMapping(**m) for m in field_mappings],
+            chain=_chain_from_full_config(configuration.full_config),
             created_at=configuration.created_at,
             updated_at=configuration.updated_at,
         ),
@@ -731,6 +786,7 @@ async def get_configuration(
             status=config.status,
             version=config.version,
             field_mappings=[FieldMapping(**m) for m in field_mappings],
+            chain=_chain_from_full_config(config.full_config),
             created_at=config.created_at,
             updated_at=config.updated_at,
         ),
@@ -748,6 +804,7 @@ def _serialize_config(config: Configuration) -> ConfigurationResponse:
         status=config.status,
         version=config.version,
         field_mappings=[FieldMapping(**m) for m in field_mappings],
+        chain=_chain_from_full_config(config.full_config),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -959,6 +1016,7 @@ async def list_configurations(
                 status=c.status,
                 version=c.version,
                 field_mappings=json.loads(c.field_mappings) if c.field_mappings else [],
+                chain=_chain_from_full_config(c.full_config),
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )

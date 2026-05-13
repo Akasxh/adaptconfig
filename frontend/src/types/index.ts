@@ -85,6 +85,34 @@ export interface FieldMapping {
   is_confirmed: boolean;
 }
 
+// Chain-runtime view of a configured endpoint -- only present when the
+// config opts in via depends_on. Single-endpoint configs and configs without
+// any depends_on receive an empty chain array from the backend.
+export interface ChainExtractRule {
+  name?: string;
+  path?: string;
+  // Permit other shapes the LLM may emit (e.g. "as", "from") without breaking.
+  [key: string]: unknown;
+}
+
+export interface ChainInjectRule {
+  from?: string;
+  to?: string;
+  source?: string;
+  target?: string;
+  value?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ChainEndpointInfo {
+  id: string;
+  path: string;
+  method: string;
+  depends_on: string[];
+  extract: ChainExtractRule[];
+  inject: ChainInjectRule[];
+}
+
 // Matches ConfigurationResponse Pydantic schema
 export interface Configuration {
   id: string;
@@ -96,6 +124,7 @@ export interface Configuration {
   field_mappings: FieldMapping[];
   transformation_rules?: Record<string, unknown>[];
   hooks?: Record<string, unknown>[];
+  chain?: ChainEndpointInfo[];
   created_at: string;
   updated_at: string;
   // legacy optional fields kept for backward compat

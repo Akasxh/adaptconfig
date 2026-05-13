@@ -230,12 +230,20 @@ class TestGeminiClientLifecycle:
         await c.close()
 
     def test_get_llm_client_returns_singleton(self) -> None:
-        """get_llm_client returns the same instance on repeated calls."""
+        """get_llm_client returns the same instance on repeated calls.
+
+        The provider switch defaults to OpenAI, so we briefly flip the runtime
+        flag to "gemini" for this test -- the goal here is the singleton
+        contract, not the provider dispatch (which has its own coverage).
+        """
         import finspark.services.llm.client as mod
+        from finspark.core.config import settings as runtime_settings
 
         original = mod._shared_client
+        original_provider = runtime_settings.llm_provider
         try:
             mod._shared_client = None
+            runtime_settings.llm_provider = "gemini"
             with patch.object(mod, "GeminiClient") as mock_cls:
                 mock_instance = mock_cls.return_value
                 c1 = get_llm_client()
@@ -244,6 +252,7 @@ class TestGeminiClientLifecycle:
                 mock_cls.assert_called_once()
         finally:
             mod._shared_client = original
+            runtime_settings.llm_provider = original_provider
 
     async def test_lifespan_closes_shared_client(self) -> None:
         """The app lifespan shutdown closes the shared client."""
@@ -255,10 +264,13 @@ class TestGeminiClientLifecycle:
         try:
             from finspark.main import lifespan, app
 
-            # We need to mock init_db and seed_adapters to avoid DB setup
+            # We need to mock init_db / seed_adapters / seed_admin_user so
+            # the lifespan does not touch the real on-disk SQLite DB during
+            # the test (which has no schema applied).
             with (
                 patch("finspark.main.init_db", new_callable=AsyncMock),
                 patch("finspark.main.seed_adapters", new_callable=AsyncMock),
+                patch("finspark.main.seed_admin_user", new_callable=AsyncMock),
                 patch("finspark.main.settings") as mock_settings,
             ):
                 mock_settings.debug = True
