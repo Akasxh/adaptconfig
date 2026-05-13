@@ -21,14 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from finspark.models.adapter import Adapter, AdapterVersion
 from finspark.models.document import Document
+from finspark.schemas.common import DocType
 from finspark.schemas.documents import (
     ExtractedAuth,
     ExtractedEndpoint,
     ExtractedField,
     ParsedDocumentResult,
 )
-from finspark.schemas.common import DocType
-
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "test_fixtures"
 
@@ -192,10 +191,14 @@ class TestSuggestRouteAcceptance:
             }
         )
 
-        with patch(
-            "finspark.api.routes.adapters.get_llm_client",
-            return_value=fake_client,
+        with (
+            patch("finspark.api.routes.adapters.settings") as mock_settings,
+            patch(
+                "finspark.api.routes.adapters.get_llm_client",
+                return_value=fake_client,
+            ),
         ):
+            mock_settings.ai_enabled = True
             resp = await client.post(
                 "/api/v1/adapters/suggest", json={"document_id": doc_id}
             )
@@ -220,10 +223,14 @@ class TestSuggestRouteAcceptance:
         fake_client = AsyncMock()
         fake_client.generate_json = AsyncMock(return_value={"matches": []})
 
-        with patch(
-            "finspark.api.routes.adapters.get_llm_client",
-            return_value=fake_client,
+        with (
+            patch("finspark.api.routes.adapters.settings") as mock_settings,
+            patch(
+                "finspark.api.routes.adapters.get_llm_client",
+                return_value=fake_client,
+            ),
         ):
+            mock_settings.ai_enabled = True
             resp = await client.post(
                 "/api/v1/adapters/suggest", json={"document_id": doc_id}
             )
