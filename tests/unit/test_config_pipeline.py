@@ -282,7 +282,7 @@ class TestGenerateConfigurationPipeline:
 
     @pytest.mark.asyncio
     async def test_llm_path_with_augmentation(self) -> None:
-        """When AI is enabled and Gemini key present, LLM runs then rule augments."""
+        """When AI is enabled and the selected provider has a key, LLM runs then rule augments."""
         from finspark.api.routes.configurations import generate_configuration
         from finspark.schemas.configurations import GenerateConfigRequest
 
@@ -305,6 +305,8 @@ class TestGenerateConfigurationPipeline:
             ),
         ):
             mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "openai"
+            mock_settings.openai_api_key = "test-openai-key"
             mock_settings.gemini_api_key = "test-key"
 
             result = await generate_configuration(
@@ -316,6 +318,48 @@ class TestGenerateConfigurationPipeline:
                 audit=self._make_mock_audit(),
             )
 
+        assert "llm_with_rule_augment" in result.message
+        assert result.data.status == "configured"
+
+    @pytest.mark.asyncio
+    async def test_openai_llm_path_does_not_require_gemini_key(self) -> None:
+        """OpenAI is the primary provider, so an OpenAI key is enough to run LLM generation."""
+        from finspark.api.routes.configurations import generate_configuration
+        from finspark.schemas.configurations import GenerateConfigRequest
+
+        request = GenerateConfigRequest(
+            document_id="doc-1",
+            adapter_version_id="av-1",
+            name="Test Config",
+        )
+
+        with (
+            patch("finspark.api.routes.configurations.settings") as mock_settings,
+            patch(
+                "finspark.api.routes.configurations.get_llm_client",
+                return_value=MagicMock(),
+            ) as get_client,
+            patch(
+                "finspark.api.routes.configurations.generate_config_llm",
+                new_callable=AsyncMock,
+                return_value=_SAMPLE_LLM_CONFIG.copy(),
+            ),
+        ):
+            mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "openai"
+            mock_settings.openai_api_key = "test-openai-key"
+            mock_settings.gemini_api_key = ""
+
+            result = await generate_configuration(
+                request=request,
+                background_tasks=BackgroundTasks(),
+                db=self._make_mock_db(self._make_mock_doc(), self._make_mock_av()),
+                tenant=self._make_mock_tenant(),
+                generator=ConfigGenerator(),
+                audit=self._make_mock_audit(),
+            )
+
+        get_client.assert_called_once()
         assert "llm_with_rule_augment" in result.message
         assert result.data.status == "configured"
 
@@ -344,6 +388,8 @@ class TestGenerateConfigurationPipeline:
             ),
         ):
             mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "gemini"
+            mock_settings.openai_api_key = ""
             mock_settings.gemini_api_key = "test-key"
 
             result = await generate_configuration(
@@ -383,6 +429,8 @@ class TestGenerateConfigurationPipeline:
             ),
         ):
             mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "gemini"
+            mock_settings.openai_api_key = ""
             mock_settings.gemini_api_key = "test-key"
 
             result = await generate_configuration(
@@ -410,6 +458,8 @@ class TestGenerateConfigurationPipeline:
 
         with patch("finspark.api.routes.configurations.settings") as mock_settings:
             mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "openai"
+            mock_settings.openai_api_key = ""
             mock_settings.gemini_api_key = ""
 
             result = await generate_configuration(

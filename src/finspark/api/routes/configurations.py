@@ -68,6 +68,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
 
 
+def _llm_generation_enabled() -> bool:
+    """Return whether config generation should attempt the configured LLM provider."""
+    if not settings.ai_enabled:
+        return False
+    provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(settings, "openai_api_key", ""))
+    return bool(getattr(settings, "gemini_api_key", ""))
+
+
 def _chain_from_full_config(full_config_json: str | None) -> list[ChainEndpointInfo]:
     """Surface chain-runtime metadata from the persisted ``full_config`` JSON.
 
@@ -610,7 +620,7 @@ async def generate_configuration(
     """Generate integration configuration from a parsed document and adapter.
 
     Pipeline:
-    1. If AI is enabled and Gemini key is present, attempt LLM generation first.
+    1. If AI is enabled and the configured provider has a key, attempt LLM generation first.
     2. Always run the rule-based field mapper to validate/augment field mappings
        with confidence scores.
     3. If LLM fails, fall back to pure rule-based generation.
@@ -647,7 +657,7 @@ async def generate_configuration(
         else {},
     }
 
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key)
+    use_llm = _llm_generation_enabled()
     generation_path = "rule_based"
     config: dict[str, Any] = {}
 

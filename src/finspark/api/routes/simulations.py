@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
 
 
+def _llm_validation_enabled(*, is_chain_config: bool) -> bool:
+    """Return whether simulation should attempt the configured LLM validator."""
+    if is_chain_config or not settings.ai_enabled:
+        return False
+    provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(settings, "openai_api_key", ""))
+    return bool(getattr(settings, "gemini_api_key", ""))
+
+
 @router.get("/", response_model=APIResponse[list[SimulationResponse]])
 async def list_simulations(
     db: AsyncSession = Depends(get_db),
@@ -115,7 +125,7 @@ async def run_simulation_for_config(
     chain_endpoints = full_config.get("endpoints", []) if isinstance(full_config, dict) else []
     is_chain_config = ChainExecutor.is_chain(chain_endpoints)
 
-    use_llm = settings.ai_enabled and bool(settings.gemini_api_key) and not is_chain_config
+    use_llm = _llm_validation_enabled(is_chain_config=is_chain_config)
     try:
         if use_llm:
             try:
