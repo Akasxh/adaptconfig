@@ -34,6 +34,7 @@ def generate_mock_response(
         "SMS Gateway": _SMSMock,
         "Account Aggregator (AA Framework)": _AccountAggregatorMock,
         "Email Notification Gateway": _EmailMock,
+        "SkyLend Loan Origination": _SkyLendMock,
     }
     generator_cls = generators.get(adapter_name)
 
@@ -65,6 +66,7 @@ def _match_by_base_url(base_url: str) -> type | None:
         ("sms", "_SMSMock"),
         ("account-aggregator", "_AccountAggregatorMock"),
         ("email", "_EmailMock"),
+        ("skylend", "_SkyLendMock"),
     ]
     import sys
 
@@ -718,4 +720,112 @@ class _EmailMock(_AdapterMock):
             "subject": payload.get("subject", "Notification from FinSpark"),
             "delivery_status": "ACCEPTED",
             "submitted_at": "2025-03-01T10:00:00+05:30",
+        }
+
+
+# ---------------------------------------------------------------------------
+# SkyLend Loan Origination (multi-step chain demo)
+# ---------------------------------------------------------------------------
+
+
+class _SkyLendMock(_AdapterMock):
+    """Mocks for the seven SkyLend loan-origination endpoints.
+
+    Every response intentionally contains the fields downstream chain
+    steps extract — so the chain test panel runs all green end-to-end
+    and shows real values flowing between nodes.
+    """
+
+    @classmethod
+    def respond(cls, endpoint_path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        pan = str(payload.get("pan_number") or payload.get("customer_id") or "ABCDE1234F")
+        seed = _seed_from(pan)
+
+        if "/oauth" in endpoint_path or "/token" in endpoint_path:
+            return cls._oauth_token(seed)
+        if "/verify-pan" in endpoint_path or "/customer/verify" in endpoint_path:
+            return cls._verify_pan(seed, pan)
+        if "/credit/inquiry" in endpoint_path and "/report" in endpoint_path:
+            return cls._credit_report(seed)
+        if "/credit/inquiry" in endpoint_path:
+            return cls._credit_inquiry(seed)
+        if "/risk/score" in endpoint_path:
+            return cls._risk_score(seed)
+        if "/loan/offer" in endpoint_path and "/status" in endpoint_path:
+            return cls._offer_status(seed)
+        if "/loan/offer" in endpoint_path:
+            return cls._loan_offer(seed)
+        return _default_response("SkyLend Loan Origination", endpoint_path)
+
+    @classmethod
+    def _oauth_token(cls, seed: int) -> dict[str, Any]:
+        return {
+            "access_token": f"sk-jwt-{seed % 10**10:010x}",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "customer credit loan",
+        }
+
+    @classmethod
+    def _verify_pan(cls, seed: int, pan: str) -> dict[str, Any]:
+        return {
+            "customer_id": f"CUST{seed % 9999999:07d}",
+            "verified": True,
+            "match_score": round(0.85 + (seed % 15) / 100, 2),
+            "bureau_name": "CIBIL",
+            "pan": pan,
+        }
+
+    @classmethod
+    def _credit_inquiry(cls, seed: int) -> dict[str, Any]:
+        return {
+            "inquiry_id": f"INQ{seed % 9999999:07d}",
+            "bureau_score": 300 + (seed % 600),
+            "bureau_name": "CIBIL",
+            "reported_at": "2025-03-26T10:00:00+05:30",
+        }
+
+    @classmethod
+    def _credit_report(cls, seed: int) -> dict[str, Any]:
+        return {
+            "report_url": f"https://reports.skylend.in/v2/{seed % 9999999:07d}.pdf",
+            "generated_at": "2025-03-26T10:01:30+05:30",
+            "total_accounts": (seed % 12) + 1,
+            "active_accounts": (seed % 6) + 1,
+            "delinquent_accounts": seed % 2,
+        }
+
+    @classmethod
+    def _risk_score(cls, seed: int) -> dict[str, Any]:
+        grades = ["A1", "A2", "B1", "B2", "C", "D"]
+        idx = seed % len(grades)
+        return {
+            "risk_grade": grades[idx],
+            "max_loan_amount_inr": ((seed % 50) + 10) * 100000,
+            "recommended_tenor": [12, 24, 36, 48, 60][seed % 5],
+            "decision_factors": {
+                "bureau_weight": 0.55,
+                "income_weight": 0.30,
+                "tenure_weight": 0.15,
+            },
+        }
+
+    @classmethod
+    def _loan_offer(cls, seed: int) -> dict[str, Any]:
+        return {
+            "offer_id": f"OFFER{seed % 9999999:07d}",
+            "offered_amount_inr": ((seed % 50) + 10) * 100000,
+            "interest_rate": round(9.5 + (seed % 600) / 100, 2),
+            "tenor_months": [12, 24, 36, 48, 60][seed % 5],
+            "processing_fee_inr": ((seed % 5) + 1) * 500,
+            "valid_until": "2025-04-26T23:59:59+05:30",
+        }
+
+    @classmethod
+    def _offer_status(cls, seed: int) -> dict[str, Any]:
+        statuses = ["pending", "accepted", "rejected", "expired"]
+        return {
+            "status": statuses[seed % len(statuses)],
+            "accepted_at": "2025-03-27T11:15:00+05:30" if seed % 4 == 1 else None,
+            "disbursed_at": None,
         }

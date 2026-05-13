@@ -605,13 +605,38 @@ Rules:
                         }
                     )
 
+                # OpenAPI vendor extension: x-finspark-chain carries chain
+                # metadata directly in the spec (id / depends_on / extract /
+                # inject). Lets us ship self-contained demo YAMLs that work
+                # without an LLM re-analyze pass.
+                chain_meta = details.get("x-finspark-chain") or {}
+                chain_extract: list[ExtractRule] = []
+                for r in (chain_meta.get("extract") or []):
+                    if isinstance(r, dict) and r.get("save_as"):
+                        chain_extract.append(ExtractRule(
+                            json_path=str(r.get("json_path") or r["save_as"]),
+                            save_as=str(r["save_as"]),
+                        ))
+                chain_inject: list[InjectRule] = []
+                for r in (chain_meta.get("inject") or []):
+                    if isinstance(r, dict) and r.get("template"):
+                        chain_inject.append(InjectRule(
+                            template=str(r["template"]),
+                            location=str(r.get("location") or "header").lower(),
+                            target_field=str(r.get("target_field") or ""),
+                        ))
+
                 endpoints.append(
                     ExtractedEndpoint(
+                        id=str(chain_meta.get("id") or details.get("operationId") or "").strip(),
                         path=path,
                         method=method.upper(),
                         description=details.get("summary", details.get("description", "")),
                         parameters=params,
                         is_mandatory=True,
+                        depends_on=[str(d) for d in (chain_meta.get("depends_on") or [])],
+                        extract=chain_extract,
+                        inject=chain_inject,
                     )
                 )
 

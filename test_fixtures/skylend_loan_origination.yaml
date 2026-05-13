@@ -1,0 +1,308 @@
+openapi: 3.0.3
+info:
+  title: SkyLend Loan Origination Platform
+  version: 2.4.0
+  description: |
+    Multi-step loan origination integration for Indian fintech lenders.
+    The flow walks a customer from PAN verification through credit bureau
+    inquiry, internal risk scoring, and offer generation — every step
+    feeds the next.
+
+    This spec carries `x-finspark-chain` vendor extensions on each
+    operation so AdaptConfig's chain tester can demonstrate dependency-
+    DAG execution end-to-end without any post-upload re-analysis.
+
+servers:
+  - url: https://api.skylend.in/v2
+    description: Production
+
+  - url: https://sandbox.skylend.in/v2
+    description: Sandbox
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  # ── Step 1: OAuth ─────────────────────────────────────────────────────────
+  /oauth/token:
+    post:
+      operationId: oauth_token
+      summary: Exchange client credentials for a short-lived access token
+      x-finspark-chain:
+        id: oauth_token
+        # Root of the chain — no dependencies. Extracts the bearer token
+        # that every downstream call needs.
+        extract:
+          - json_path: access_token
+            save_as: access_token
+          - json_path: expires_in
+            save_as: token_ttl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, client_secret, grant_type]
+              properties:
+                client_id:     { type: string }
+                client_secret: { type: string }
+                grant_type:    { type: string, enum: [client_credentials] }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type:   { type: string, example: Bearer }
+                  expires_in:   { type: integer, example: 3600 }
+                  scope:        { type: string }
+
+  # ── Step 2: PAN verification ─────────────────────────────────────────────
+  /customer/verify-pan:
+    post:
+      operationId: verify_pan
+      summary: Verify customer PAN with the income-tax bureau
+      x-finspark-chain:
+        id: verify_pan
+        depends_on: [oauth_token]
+        extract:
+          - json_path: customer_id
+            save_as: customer_id
+        inject:
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pan_number, full_name, date_of_birth]
+              properties:
+                pan_number:    { type: string, example: "ABCDE1234F" }
+                full_name:     { type: string }
+                date_of_birth: { type: string, format: date }
+                mobile_number: { type: string }
+                consent:       { type: boolean }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  customer_id:    { type: string }
+                  verified:       { type: boolean }
+                  match_score:    { type: number }
+                  bureau_name:    { type: string }
+
+  # ── Step 3: Credit bureau inquiry ────────────────────────────────────────
+  /credit/inquiry:
+    post:
+      operationId: credit_inquiry
+      summary: Initiate a soft credit inquiry against the customer
+      x-finspark-chain:
+        id: credit_inquiry
+        depends_on: [verify_pan]
+        # Two extracts feed two different downstream nodes — the fan-out point.
+        extract:
+          - json_path: inquiry_id
+            save_as: inquiry_id
+          - json_path: bureau_score
+            save_as: bureau_score
+        inject:
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+          - template: "{{customer_id}}"
+            location: body
+            target_field: customer_id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_id:  { type: string }
+                inquiry_type: { type: string, enum: [soft, hard] }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inquiry_id:    { type: string }
+                  bureau_score:  { type: integer }
+                  bureau_name:   { type: string }
+                  reported_at:   { type: string, format: date-time }
+
+  # ── Step 4a: Detailed credit report (path-template dependency) ──────────
+  /credit/inquiry/{inquiry_id}/report:
+    get:
+      operationId: credit_report
+      summary: Download the detailed report for an inquiry
+      x-finspark-chain:
+        id: credit_report
+        depends_on: [credit_inquiry]
+        extract:
+          - json_path: report_url
+            save_as: report_url
+        inject:
+          - template: "{{inquiry_id}}"
+            location: path
+            target_field: inquiry_id
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+      parameters:
+        - in: path
+          name: inquiry_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_url:    { type: string }
+                  generated_at:  { type: string, format: date-time }
+                  total_accounts:  { type: integer }
+                  active_accounts: { type: integer }
+
+  # ── Step 4b: Internal risk score (parallel to credit_report) ─────────────
+  /risk/score:
+    post:
+      operationId: risk_score
+      summary: Compute an internal risk grade from customer + bureau data
+      x-finspark-chain:
+        id: risk_score
+        depends_on: [credit_inquiry]
+        extract:
+          - json_path: risk_grade
+            save_as: risk_grade
+          - json_path: max_loan_amount_inr
+            save_as: max_loan_amount_inr
+        inject:
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+          - template: "{{customer_id}}"
+            location: body
+            target_field: customer_id
+          - template: "{{bureau_score}}"
+            location: body
+            target_field: bureau_score
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_id:   { type: string }
+                bureau_score:  { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  risk_grade:            { type: string, enum: [A1, A2, B1, B2, C, D] }
+                  max_loan_amount_inr:   { type: integer }
+                  recommended_tenor:     { type: integer }
+
+  # ── Step 5: Loan offer (diamond — needs both 4a AND 4b) ──────────────────
+  /loan/offer:
+    post:
+      operationId: loan_offer
+      summary: Generate a loan offer for the customer
+      x-finspark-chain:
+        # Diamond point — depends on BOTH credit_report and risk_score.
+        # Visualizer will show two arrows converging here.
+        id: loan_offer
+        depends_on: [credit_report, risk_score]
+        extract:
+          - json_path: offer_id
+            save_as: offer_id
+        inject:
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+          - template: "{{customer_id}}"
+            location: body
+            target_field: customer_id
+          - template: "{{risk_grade}}"
+            location: body
+            target_field: risk_grade
+          - template: "{{max_loan_amount_inr}}"
+            location: body
+            target_field: requested_amount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_id:       { type: string }
+                risk_grade:        { type: string }
+                requested_amount:  { type: integer }
+                tenor_months:      { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer_id:    { type: string }
+                  offered_amount_inr: { type: integer }
+                  interest_rate:      { type: number }
+                  tenor_months:       { type: integer }
+
+  # ── Step 6: Offer status (uses path template) ────────────────────────────
+  /loan/offer/{offer_id}/status:
+    get:
+      operationId: offer_status
+      summary: Poll an offer's acceptance status
+      x-finspark-chain:
+        id: offer_status
+        depends_on: [loan_offer]
+        inject:
+          - template: "{{offer_id}}"
+            location: path
+            target_field: offer_id
+          - template: "Bearer {{access_token}}"
+            location: header
+            target_field: Authorization
+      parameters:
+        - in: path
+          name: offer_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:        { type: string, enum: [pending, accepted, rejected, expired] }
+                  accepted_at:   { type: string, format: date-time, nullable: true }
+                  disbursed_at:  { type: string, format: date-time, nullable: true }
