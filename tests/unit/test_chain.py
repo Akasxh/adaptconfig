@@ -107,6 +107,70 @@ class TestGraph:
         assert g.cycle_error is not None
         assert g.is_valid() is False
 
+    def test_three_node_cycle_detected(self) -> None:
+        eps = [
+            {"id": "a", "path": "/a", "method": "GET", "depends_on": ["c"]},
+            {"id": "b", "path": "/b", "method": "GET", "depends_on": ["a"]},
+            {"id": "c", "path": "/c", "method": "GET", "depends_on": ["b"]},
+        ]
+        g = build_chain_graph(eps)
+        assert g.cycle_error is not None
+        # All three nodes should appear in the reported cycle.
+        for name in ("a", "b", "c"):
+            assert name in g.cycle_error
+
+    def test_self_loop_flagged_as_cycle(self) -> None:
+        # depends_on: [self] is almost always a typo — flag it.
+        eps = [{"id": "a", "path": "/a", "method": "GET", "depends_on": ["a"]}]
+        g = build_chain_graph(eps)
+        assert g.cycle_error is not None
+        assert "a -> a" in g.cycle_error
+
+    def test_diamond_is_not_a_cycle(self) -> None:
+        # a → b, a → c, b → d, c → d  — valid DAG, two paths meet at d.
+        eps = [
+            {"id": "a", "path": "/a", "method": "GET", "depends_on": []},
+            {"id": "b", "path": "/b", "method": "GET", "depends_on": ["a"]},
+            {"id": "c", "path": "/c", "method": "GET", "depends_on": ["a"]},
+            {"id": "d", "path": "/d", "method": "GET", "depends_on": ["b", "c"]},
+        ]
+        g = build_chain_graph(eps)
+        assert g.cycle_error is None
+        assert g.layers == [["a"], ["b", "c"], ["d"]]
+
+    def test_cycle_through_inferred_auth_edge(self) -> None:
+        # Data edge b → a is explicit; auth edge a → b is inferred from an
+        # inject referencing access_token that a extracts. Cycle must catch it.
+        eps = [
+            {"id": "a", "path": "/a", "method": "GET",
+             "extract": [{"json_path": "access_token", "save_as": "access_token"}],
+             "depends_on": ["b"]},
+            {"id": "b", "path": "/b", "method": "GET",
+             "inject": [{"template": "Bearer {{access_token}}",
+                         "location": "header", "target_field": "Authorization"}],
+             "depends_on": []},
+        ]
+        g = build_chain_graph(eps)
+        assert g.cycle_error is not None
+        kinds = {(e.source, e.target): e.kind for e in g.edges}
+        assert kinds.get(("b", "a")) == "data"
+        assert kinds.get(("a", "b")) == "auth"
+
+    def test_polling_and_compensates_edges_excluded_from_cycle_check(self) -> None:
+        # Self-loop classified as polling, plus a compensates reverse edge,
+        # must NOT trip the cycle detector — that's how legitimate polling /
+        # compensation flows are modelled.
+        from finspark.services.chain.graph import ChainEdge, _find_cycle
+        eps = [
+            {"id": "pay", "path": "/pay", "method": "POST", "depends_on": []},
+            {"id": "refund", "path": "/refund", "method": "POST", "depends_on": ["pay"]},
+            {"id": "poll", "path": "/status", "method": "GET", "depends_on": []},
+        ]
+        g = build_chain_graph(eps)
+        g.edges.append(ChainEdge(source="poll", target="poll", kind="polling"))
+        g.edges.append(ChainEdge(source="refund", target="pay", kind="compensates"))
+        assert _find_cycle(g) is None
+
     def test_unknown_dependency_ignored(self) -> None:
         eps = [
             {"id": "a", "path": "/a", "method": "GET", "depends_on": ["does_not_exist"]},

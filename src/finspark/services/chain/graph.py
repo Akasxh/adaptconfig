@@ -101,10 +101,14 @@ def build_chain_graph(endpoints: list[dict[str, Any]]) -> ChainGraph:
         )
 
     # 2. Edges from explicit depends_on. Ignore references to unknown nodes.
+    # Self-references (depends_on contains the node's own id) are kept as
+    # real edges — they're almost always a typo, and the cycle detector
+    # below will surface them as the config error they are. The polling
+    # case is handled separately (edge kind="polling"), not via depends_on.
     saved_by = _build_saved_by_index(graph)  # save_as -> producing node id
     for node in graph.nodes.values():
         for dep in node.depends_on:
-            if dep in graph.nodes and dep != node.id:
+            if dep in graph.nodes:
                 graph.edges.append(ChainEdge(
                     source=dep, target=node.id, kind="data"
                 ))
