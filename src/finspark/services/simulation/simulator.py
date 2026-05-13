@@ -9,6 +9,7 @@ from typing import Any
 
 from finspark.schemas.simulations import SimulationStepResult
 from finspark.services.llm.client import GeminiAPIError, GeminiClient
+from finspark.services.transformation import apply_transformation_safe
 
 logger = logging.getLogger(__name__)
 
@@ -585,10 +586,24 @@ Return only the JSON object. No markdown, no prose outside the JSON."""
 
     @staticmethod
     def _build_sample_request(config: dict[str, Any]) -> dict[str, Any]:
-        """Build a sample request from field mappings."""
+        """Build a sample request from field mappings.
+
+        Per-field transformations defined on each mapping are applied here:
+        ``transformation_expr`` (the new free-text DSL) takes precedence; if
+        it is blank or fails to parse, the legacy enum ``transformation``
+        value is applied as a best-effort fallback. The simulator must never
+        crash on a bad expression — :func:`apply_transformation_safe` enforces
+        that contract.
+        """
         request: dict[str, Any] = {}
         for mapping in config.get("field_mappings", []):
             source = mapping.get("source_field", "")
-            if source:
-                request[source] = MockAPIServer.MOCK_DATA.get(source, f"sample_{source}")
+            if not source:
+                continue
+            value = MockAPIServer.MOCK_DATA.get(source, f"sample_{source}")
+            request[source] = apply_transformation_safe(
+                value,
+                mapping.get("transformation_expr"),
+                mapping.get("transformation"),
+            )
         return request
