@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -298,20 +300,6 @@ def _decode_number(kind: str, lexeme: str) -> int | float:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
-
-
-# A literal arg, post-parse: either a Python primitive or the X_PLACEHOLDER
-# sentinel meaning "thread the current value here". Today ``x`` is always
-# discarded before evaluation so the registry callable signatures stay simple,
-# but having the sentinel makes the parser future-proof.
-class _XPlaceholder:
-    __slots__ = ()
-
-    def __repr__(self) -> str:  # pragma: no cover - cosmetic
-        return "<x>"
-
-
-X_PLACEHOLDER = _XPlaceholder()
 
 
 # A parsed step: (function_name, [literal_args], position)

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -9,16 +10,17 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import logging
-
-from finspark.api.dependencies import get_audit_service, get_simulator, get_tenant_context, require_role
+from finspark.api.dependencies import (
+    get_audit_service,
+    get_simulator,
+    get_tenant_context,
+    require_role,
+)
 from finspark.core import events
-from finspark.core.config import settings
-from finspark.core.json_utils import safe_json_loads
 from finspark.core.audit import AuditService
+from finspark.core.config import settings
 from finspark.core.database import async_session_factory, get_db
-
-logger = logging.getLogger(__name__)
+from finspark.core.json_utils import safe_json_loads
 from finspark.models.configuration import Configuration
 from finspark.models.simulation import Simulation, SimulationStep
 from finspark.schemas.common import APIResponse, TenantContext
@@ -30,6 +32,8 @@ from finspark.schemas.simulations import (
 from finspark.services.chain import ChainCycleError, ChainExecutor
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
 

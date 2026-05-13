@@ -205,7 +205,7 @@ class ChainExecutor:
     working without changes.
     """
 
-    def __init__(self, mock_server: "MockAPIServer") -> None:
+    def __init__(self, mock_server: MockAPIServer) -> None:
         self.mock_server = mock_server
 
     @staticmethod
@@ -232,7 +232,6 @@ class ChainExecutor:
         relevant slots.
         """
         ordered = topological_sort(endpoints)
-        responses: dict[str, dict[str, Any]] = {}
         extracted_values: dict[str, Any] = {}
         results: list[SimulationStepResult] = []
 
@@ -266,7 +265,6 @@ class ChainExecutor:
                 endpoint, payload, config=config
             )
             duration = max(1, int((time.monotonic() - start) * 1000))
-            responses[step_id] = response
 
             extracts = _normalise_extracts(endpoint.get("extract"))
             applied_extracts: list[dict[str, Any]] = []

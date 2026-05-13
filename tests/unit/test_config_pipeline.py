@@ -12,14 +12,12 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import BackgroundTasks
-
 import pytest
+from fastapi import BackgroundTasks
 
 from finspark.api.routes.configurations import _augment_with_rule_based
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.llm.client import GeminiAPIError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -297,7 +295,7 @@ class TestGenerateConfigurationPipeline:
         with (
             patch("finspark.api.routes.configurations.settings") as mock_settings,
             patch(
-                "finspark.api.routes.configurations.GeminiClient",
+                "finspark.api.routes.configurations.get_llm_client",
                 return_value=MagicMock(),
             ),
             patch(
@@ -336,7 +334,7 @@ class TestGenerateConfigurationPipeline:
         with (
             patch("finspark.api.routes.configurations.settings") as mock_settings,
             patch(
-                "finspark.api.routes.configurations.GeminiClient",
+                "finspark.api.routes.configurations.get_llm_client",
                 return_value=MagicMock(),
             ),
             patch(
@@ -375,7 +373,7 @@ class TestGenerateConfigurationPipeline:
         with (
             patch("finspark.api.routes.configurations.settings") as mock_settings,
             patch(
-                "finspark.api.routes.configurations.GeminiClient",
+                "finspark.api.routes.configurations.get_llm_client",
                 return_value=MagicMock(),
             ),
             patch(

@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finspark.api.dependencies import get_adapter_registry, get_deprecation_tracker, get_tenant_context
+from finspark.api.dependencies import (
+    get_adapter_registry,
+    get_deprecation_tracker,
+    get_tenant_context,
+)
+from finspark.core.config import settings
 from finspark.core.database import get_db
 from finspark.core.json_utils import safe_json_loads
 from finspark.models.document import Document
@@ -32,32 +37,6 @@ from finspark.services.registry.deprecation import DeprecationTracker
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/adapters", tags=["Adapters"])
-
-
-def compute_adapter_match_score(
-    parsed_result: dict[str, Any],
-    adapter_versions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Return list of {adapter_name, version, score} sorted by score desc."""
-    doc_fields = {f["name"] for f in parsed_result.get("fields", [])}
-    doc_endpoints = {f["path"] for f in parsed_result.get("endpoints", [])}
-
-    matches = []
-    for av in adapter_versions:
-        adapter_endpoints = {ep["path"] for ep in av.get("endpoints", [])}
-        adapter_fields = set(av.get("request_schema", {}).get("properties", {}).keys())
-
-        endpoint_overlap = len(doc_endpoints & adapter_endpoints) / max(len(doc_endpoints | adapter_endpoints), 1)
-        field_overlap = len(doc_fields & adapter_fields) / max(len(doc_fields | adapter_fields), 1)
-        score = endpoint_overlap * 0.6 + field_overlap * 0.4
-
-        matches.append({
-            "adapter_name": av["adapter_name"],
-            "version": av["version"],
-            "score": round(score, 2),
-        })
-
-    return sorted(matches, key=lambda x: x["score"], reverse=True)
 
 
 @router.get("/", response_model=APIResponse[AdapterListResponse])
@@ -120,7 +99,7 @@ async def get_adapter(
 
     versions = []
     for v in adapter.versions:
-        endpoints = json.loads(v.endpoints) if v.endpoints else []
+        endpoints = safe_json_loads(v.endpoints, [])
         versions.append(
             AdapterVersionResponse(
                 id=v.id,
@@ -227,11 +206,12 @@ async def suggest_adapter(
 
     adapters = await registry.list_adapters()
 
-    try:
-        llm_client = get_llm_client()
-    except Exception as exc:  # noqa: BLE001 — defensive: missing key, etc.
-        logger.warning("adapter_suggest_llm_unavailable error=%s", exc)
-        llm_client = None
+    llm_client = None
+    if settings.ai_enabled:
+        try:
+            llm_client = get_llm_client()
+        except Exception as exc:  # noqa: BLE001 — defensive: missing key, etc.
+            logger.warning("adapter_suggest_llm_unavailable error=%s", exc)
 
     suggester = AdapterSuggester(llm_client=llm_client)
     response = await suggester.suggest(parsed, adapters)

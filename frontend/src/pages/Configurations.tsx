@@ -1,5 +1,5 @@
 import { useToast } from "@/components/Toast";
-import { adaptersApi, configurationsApi, documentsApi, simulationsApi } from "@/lib/api";
+import { adaptersApi, configurationsApi, documentsApi } from "@/lib/api";
 import type {
   Adapter,
   ChainEndpointInfo,
@@ -1483,10 +1483,6 @@ export default function Configurations() {
     queryFn: () => configurationsApi.list(),
   });
 
-  const [lastSimResult, setLastSimResult] = useState<{
-    configId: string; status: string; passed: number; total: number; steps: Array<{ step_name: string; status: string; error_message?: string }>;
-  } | null>(null);
-
   const [pipeline, setPipeline] = useState<PipelineUI | null>(null);
 
   // One-click pipeline: configured → validate (LLM 7-dim) → testing → smoke.
@@ -1494,7 +1490,7 @@ export default function Configurations() {
   // mutation optimistically renders skeleton step rows the moment the user
   // clicks and snaps each row to the real verdict when the call resolves.
   const runPipelineMutation = useMutation({
-    mutationFn: async ({ id, name }: { id: string; name: string; currentStatus: string }) => {
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
       setPipeline({
         configId: id,
         configName: name,
@@ -1548,36 +1544,13 @@ export default function Configurations() {
 
   const transitionMutation = useMutation({
     mutationFn: async ({ id, targetState }: { id: string; targetState: string }) => {
-      const transResult = await configurationsApi.transition(id, targetState);
-      // Auto-run simulation when transitioning to "testing"
-      if (targetState === "testing") {
-        try {
-          const simResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-          const sim = simResp.data;
-          if (sim) {
-            setLastSimResult({
-              configId: id,
-              status: sim.status,
-              passed: sim.passed_tests,
-              total: sim.total_tests,
-              steps: sim.steps || [],
-            });
-          }
-        } catch {
-          // Simulation failed but transition succeeded — still OK
-        }
-      }
-      return transResult;
+      return configurationsApi.transition(id, targetState);
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["configurations"] });
       queryClient.invalidateQueries({ queryKey: ["config-history"] });
-      if (vars.targetState === "testing" && lastSimResult) {
-        toast(`Testing: ${lastSimResult.passed}/${lastSimResult.total} passed`, lastSimResult.status === "passed" ? "success" : "error");
-      } else {
-        const labels: Record<string, string> = { configured: "Marked as configured", validating: "Validation started", testing: "Testing started", active: "Deployed to production" };
-        toast(labels[vars.targetState] || "State updated.", "success");
-      }
+      const labels: Record<string, string> = { configured: "Marked as configured", validating: "Validation started", testing: "Testing started", active: "Deployed to production" };
+      toast(labels[vars.targetState] || "State updated.", "success");
     },
     onError: () => { toast("Transition failed.", "error"); },
   });
@@ -1710,12 +1683,10 @@ export default function Configurations() {
                           disabled={busy || runPipelineMutation.isPending}
                           onClick={() => {
                             if (isPipeline) {
-                              setLastSimResult(null);
-                              runPipelineMutation.mutate({ id: cfg.id, name: cfg.name, currentStatus: cfg.status });
+                              runPipelineMutation.mutate({ id: cfg.id, name: cfg.name });
                               return;
                             }
                             if (t.targetState === "active" && !window.confirm(`Deploy "${cfg.name}" to production?`)) return;
-                            setLastSimResult(null);
                             transitionMutation.mutate({ id: cfg.id, targetState: t.targetState });
                           }}
                         >
@@ -1749,35 +1720,6 @@ export default function Configurations() {
                 {pipeline && pipeline.configId === cfg.id && (
                   <div style={{ padding: "12px 18px", borderTop: "1px solid var(--color-border)" }}>
                     <ValidationPipelinePanel ui={pipeline} onClose={() => setPipeline(null)} />
-                  </div>
-                )}
-
-                {/* Simulation results after transitioning to testing */}
-                {lastSimResult && lastSimResult.configId === cfg.id && (
-                  <div style={{
-                    padding: "12px 18px", borderTop: `1px solid var(--color-border)`,
-                    background: lastSimResult.status === "passed" ? "rgba(52,211,153,0.06)" : "rgba(248,113,113,0.06)",
-                    borderRadius: "0 0 var(--glass-radius) var(--glass-radius)",
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <span style={{ fontWeight: 700, fontSize: 13, color: lastSimResult.status === "passed" ? "var(--color-success-text)" : "var(--color-error-text)" }}>
-                        {lastSimResult.status === "passed" ? "✓" : "✗"} Simulation {lastSimResult.status.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                        — {lastSimResult.passed}/{lastSimResult.total} tests passed
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {lastSimResult.steps.map((s, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                          <span style={{ color: s.status === "passed" ? "var(--color-success-text)" : "var(--color-error-text)", fontWeight: 600 }}>
-                            {s.status === "passed" ? "✓" : "✗"}
-                          </span>
-                          <span style={{ color: "var(--color-text-secondary)" }}>{s.step_name}</span>
-                          {s.error_message && <span style={{ color: "var(--color-error-text)", fontSize: 11 }}>— {s.error_message}</span>}
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
 

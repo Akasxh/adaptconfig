@@ -166,8 +166,7 @@ class IntegrationSimulator:
 
         endpoints = config.get("endpoints", [])
         if ChainExecutor.is_chain(endpoints):
-            for chain_step in self._run_chain(endpoints, config):
-                yield chain_step
+            yield from self._run_chain(endpoints, config)
         else:
             for endpoint in endpoints:
                 if endpoint.get("enabled", True):
@@ -190,9 +189,29 @@ class IntegrationSimulator:
         endpoints = config.get("endpoints", [])
         endpoint_step_fns: list[Any] = []
         if ChainExecutor.is_chain(endpoints):
-            chain_steps = self._run_chain(endpoints, config)
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_config_structure(config), step_timeout_seconds
+            )
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_field_mappings(config), step_timeout_seconds
+            )
+            chain_steps = await asyncio.to_thread(self._run_chain, endpoints, config)
             for step in chain_steps:
-                endpoint_step_fns.append((lambda s: lambda: s)(step))
+                yield step
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_auth_config(config), step_timeout_seconds
+            )
+            yield await self._execute_step_with_timeout(
+                lambda: self._test_hooks(config), step_timeout_seconds
+            )
+            if test_type == "full":
+                yield await self._execute_step_with_timeout(
+                    lambda: self._test_error_handling(config), step_timeout_seconds
+                )
+                yield await self._execute_step_with_timeout(
+                    lambda: self._test_retry_logic(config), step_timeout_seconds
+                )
+            return
         else:
             for endpoint in endpoints:
                 if endpoint.get("enabled", True):
@@ -227,7 +246,7 @@ class IntegrationSimulator:
                 asyncio.to_thread(step_fn),
                 timeout=timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return SimulationStepResult(
                 step_name="unknown_step",
                 status="error",

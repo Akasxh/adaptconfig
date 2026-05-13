@@ -23,6 +23,7 @@ from finspark.api.dependencies import (
     get_tenant_context,
     require_role,
 )
+from finspark.core import events
 from finspark.core.audit import AuditService
 from finspark.core.config import settings
 from finspark.core.database import get_db
@@ -55,17 +56,12 @@ from finspark.services.chain import is_chain
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
-from finspark.core import events
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
-from finspark.services.llm.client import GeminiAPIError, GeminiClient, get_llm_client
+from finspark.services.llm.client import GeminiAPIError, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.transformation import validate_expression
 from finspark.services.webhook_delivery import deliver_event
-
-# Imported lazily inside the validate-and-test handler to avoid a circular
-# import at module load (simulations route does not import this module today,
-# but keeping the import local is cheap insurance).
 
 logger = logging.getLogger(__name__)
 
@@ -739,7 +735,7 @@ async def generate_configuration(
         document_id=request.document_id,
         status="configured",
         version=1,
-        field_mappings=json.dumps(raw_mappings),
+        field_mappings=json.dumps(config.get("field_mappings", [])),
         transformation_rules=json.dumps(config.get("transformation_rules", [])),
         hooks=json.dumps(config.get("hooks", [])),
         full_config=json.dumps(config),
@@ -817,22 +813,7 @@ async def get_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
-
-    return APIResponse(
-        data=ConfigurationResponse(
-            id=config.id,
-            name=config.name,
-            adapter_version_id=config.adapter_version_id,
-            document_id=config.document_id,
-            status=config.status,
-            version=config.version,
-            field_mappings=[FieldMapping(**m) for m in _annotate_mapping_errors(field_mappings)],
-            chain=_chain_from_full_config(config.full_config),
-            created_at=config.created_at,
-            updated_at=config.updated_at,
-        ),
-    )
+    return APIResponse(data=_serialize_config(config))
 
 
 def _serialize_config(config: Configuration) -> ConfigurationResponse:
@@ -1204,28 +1185,7 @@ async def list_configurations(
     result = await db.execute(stmt)
     configs = result.scalars().all()
 
-    return APIResponse(
-        data=[
-            ConfigurationResponse(
-                id=c.id,
-                name=c.name,
-                adapter_version_id=c.adapter_version_id,
-                document_id=c.document_id,
-                status=c.status,
-                version=c.version,
-                field_mappings=[
-                    FieldMapping(**m)
-                    for m in _annotate_mapping_errors(
-                        json.loads(c.field_mappings) if c.field_mappings else []
-                    )
-                ],
-                chain=_chain_from_full_config(c.full_config),
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
-            for c in configs
-        ],
-    )
+    return APIResponse(data=[_serialize_config(c) for c in configs])
 
 
 @router.delete("/{config_id}", response_model=APIResponse[dict])

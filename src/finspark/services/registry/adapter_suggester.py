@@ -16,13 +16,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from finspark.models.adapter import Adapter
+from finspark.core.json_utils import safe_json_loads
 from finspark.schemas.adapters import AdapterSuggestMatch, AdapterSuggestResponse
 from finspark.schemas.common import AdapterCategory
 from finspark.services.llm.client import GeminiAPIError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from finspark.models.adapter import Adapter
 
 logger = logging.getLogger(__name__)
 
@@ -111,16 +115,13 @@ class AdapterSuggester:
             for version in adapter.versions:
                 paths: list[str] = []
                 if version.endpoints:
-                    try:
-                        loaded = json.loads(version.endpoints)
-                        if isinstance(loaded, list):
-                            paths = [
-                                str(ep.get("path", ""))
-                                for ep in loaded
-                                if isinstance(ep, dict) and ep.get("path")
-                            ]
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        paths = []
+                    loaded = safe_json_loads(version.endpoints, [])
+                    if isinstance(loaded, list):
+                        paths = [
+                            str(ep.get("path", ""))
+                            for ep in loaded
+                            if isinstance(ep, dict) and ep.get("path")
+                        ]
                 versions.append(
                     {
                         "version_id": version.id,

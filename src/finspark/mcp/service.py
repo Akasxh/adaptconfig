@@ -41,10 +41,6 @@ logger = logging.getLogger(__name__)
 MCP_TENANT_ID = "mcp-bridge"
 MCP_TENANT_NAME = "AdaptConfig MCP Bridge"
 
-# A score below this on hint-based adapter lookup triggers the catalogue
-# fallback (highest-overlap adapter by parsed fields/endpoints).
-_HINT_FUZZY_THRESHOLD = 0.4
-
 
 class BridgeError(Exception):
     """Raised when an MCP tool cannot satisfy a request."""
@@ -83,10 +79,6 @@ class BridgeService:
             result = await session.execute(stmt)
             adapters = list(result.scalars().all())
 
-            categories_stmt = select(Adapter.category).distinct()
-            categories_result = await session.execute(categories_stmt)
-            categories = sorted({row[0] for row in categories_result.all() if row[0]})
-
         items: list[dict[str, Any]] = []
         for adapter in adapters:
             versions: list[dict[str, Any]] = []
@@ -122,7 +114,7 @@ class BridgeService:
 
         return {
             "total": len(items),
-            "categories": categories,
+            "categories": sorted({adapter.category for adapter in adapters if adapter.category}),
             "adapters": items,
         }
 
