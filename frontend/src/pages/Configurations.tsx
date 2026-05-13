@@ -13,6 +13,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowRight,
   BarChart3,
   CheckCircle2,
   ChevronDown,
@@ -30,6 +31,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Wand2,
   X,
   Zap,
 } from "lucide-react";
@@ -475,7 +477,202 @@ function MappingsTable({ cfg }: { cfg: Configuration }) {
   );
 }
 
-type DetailTab = "mappings" | "history" | "validation";
+// ── Transform playground ─────────────────────────────────────────────────────
+
+function TransformPanel({ cfg }: { cfg: Configuration }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const lastRun = cfg.last_transform_run ?? null;
+
+  // Seed the editable JSON: previous source if any, else stub with all source_field keys.
+  const initialSource = (): string => {
+    if (lastRun?.source) return JSON.stringify(lastRun.source, null, 2);
+    const stub: Record<string, string> = {};
+    for (const fm of cfg.field_mappings) {
+      stub[fm.source_field] = "";
+    }
+    return JSON.stringify(stub, null, 2);
+  };
+
+  const [sourceJson, setSourceJson] = useState<string>(initialSource);
+  const [parseError, setParseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Re-seed when the config changes (e.g., user navigates between cards).
+    setSourceJson(initialSource());
+    setParseError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg.id, cfg.last_transform_run?.ran_at]);
+
+  const runMutation = useMutation({
+    mutationFn: async () => {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(sourceJson);
+      } catch (e) {
+        throw new Error(`Source payload is not valid JSON: ${(e as Error).message}`);
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("Source payload must be a JSON object");
+      }
+      return configurationsApi.runTransform(cfg.id, parsed);
+    },
+    onSuccess: (resp) => {
+      const errs = resp.data?.error_count ?? 0;
+      toast(
+        errs ? `Transformed with ${errs} error(s).` : "Transform ran successfully.",
+        errs ? "error" : "success",
+      );
+      setParseError(null);
+      queryClient.invalidateQueries({ queryKey: ["configurations"] });
+    },
+    onError: (err: Error) => {
+      setParseError(err.message);
+    },
+  });
+
+  const statusMeta: Record<string, { color: string; bg: string; label: string }> = {
+    transformed: { color: "#22c55e", bg: "rgba(34,197,94,0.10)",  label: "Transformed" },
+    passthrough: { color: "#94a3b8", bg: "rgba(148,163,184,0.10)", label: "Passthrough" },
+    missing:     { color: "#fbbf24", bg: "rgba(251,191,36,0.10)",  label: "Missing" },
+    error:       { color: "#ef4444", bg: "rgba(239,68,68,0.10)",   label: "Error" },
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 4 }}>
+            Run transform on a sample payload
+          </p>
+          <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
+            Applies this configuration's field mappings to the input below. The most recent run is persisted on the configuration.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ fontSize: 12, padding: "6px 14px", flexShrink: 0 }}
+          onClick={() => runMutation.mutate()}
+          disabled={runMutation.isPending}
+        >
+          {runMutation.isPending ? (
+            <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
+          ) : (
+            <Wand2 style={{ width: 13, height: 13 }} />
+          )}
+          Run Transform
+        </button>
+      </div>
+
+      {/* Source JSON editor */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 6 }}>Source payload</p>
+        <textarea
+          value={sourceJson}
+          onChange={(e) => { setSourceJson(e.target.value); setParseError(null); }}
+          spellCheck={false}
+          rows={Math.min(20, Math.max(6, sourceJson.split("\n").length))}
+          style={{
+            width: "100%", fontFamily: "monospace", fontSize: 12,
+            padding: "10px 12px", borderRadius: 6,
+            background: "var(--color-bg-base)",
+            border: `1px solid ${parseError ? "var(--color-error)" : "var(--color-border-strong)"}`,
+            color: "var(--color-text-primary)", resize: "vertical",
+          }}
+        />
+        {parseError && (
+          <p style={{ fontSize: 11, color: "var(--color-error)", marginTop: 4 }}>{parseError}</p>
+        )}
+      </div>
+
+      {/* Most recent result */}
+      {lastRun && (
+        <div style={{
+          padding: 14, borderRadius: 8,
+          border: `1px solid ${lastRun.error_count ? "var(--color-error)" : "var(--color-success-text)"}`,
+          background: "var(--color-surface-2)",
+          display: "flex", flexDirection: "column", gap: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {lastRun.error_count ? (
+              <AlertCircle style={{ width: 14, height: 14, color: "var(--color-error)" }} />
+            ) : (
+              <CheckCircle2 style={{ width: 14, height: 14, color: "var(--color-success-text)" }} />
+            )}
+            <span style={{ fontSize: 12, fontWeight: 700, color: lastRun.error_count ? "var(--color-error)" : "var(--color-success-text)" }}>
+              {lastRun.error_count
+                ? `Last run: ${lastRun.error_count} error(s) across ${lastRun.results.length} field(s)`
+                : `Last run: all ${lastRun.results.length} field(s) succeeded`}
+            </span>
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace" }}>
+              {new Date(lastRun.ran_at).toLocaleString()}
+            </span>
+          </div>
+
+          <div>
+            <p className="section-label" style={{ marginBottom: 6 }}>Target payload</p>
+            <pre style={{
+              fontFamily: "monospace", fontSize: 12, color: "var(--color-text-primary)",
+              padding: "10px 12px", borderRadius: 6, background: "var(--color-bg-base)",
+              border: "1px solid var(--color-border)", overflow: "auto", margin: 0, maxHeight: 280,
+            }}>{JSON.stringify(lastRun.payload, null, 2)}</pre>
+          </div>
+
+          <div>
+            <p className="section-label" style={{ marginBottom: 6 }}>Per-field</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {lastRun.results.map((r, i) => {
+                const s = statusMeta[r.status] ?? statusMeta.passthrough;
+                return (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                    padding: "6px 10px", borderRadius: 5, background: s.bg,
+                    borderLeft: `3px solid ${s.color}`, fontSize: 12,
+                  }}>
+                    <span style={{ fontFamily: "monospace", color: "var(--color-text-secondary)" }}>{r.source_field}</span>
+                    <ArrowRight style={{ width: 11, height: 11, color: "var(--color-text-muted)" }} />
+                    <span style={{ fontFamily: "monospace", color: "var(--color-text-secondary)" }}>{r.target_field}</span>
+                    {r.transformation && (
+                      <span style={{
+                        fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                        background: "var(--color-bg-base)", color: "var(--color-text-muted)",
+                        fontFamily: "monospace",
+                      }}>{r.transformation}</span>
+                    )}
+                    <span style={{
+                      marginLeft: "auto", fontSize: 9, fontWeight: 700,
+                      padding: "2px 6px", borderRadius: 3,
+                      background: s.color, color: "white",
+                      textTransform: "uppercase", letterSpacing: 0.3,
+                    }}>
+                      {s.label}
+                    </span>
+                    {r.status === "transformed" && (
+                      <div style={{ width: "100%", paddingLeft: 4, fontSize: 11, fontFamily: "monospace", color: "var(--color-text-muted)" }}>
+                        <code style={{ color: "var(--color-text-secondary)" }}>{JSON.stringify(r.original)}</code>
+                        {" → "}
+                        <code style={{ color: "var(--color-success-text)" }}>{JSON.stringify(r.transformed)}</code>
+                      </div>
+                    )}
+                    {r.status === "error" && r.error && (
+                      <div style={{ width: "100%", paddingLeft: 4, fontSize: 11, color: "var(--color-error)", fontFamily: "monospace" }}>
+                        {r.error}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+type DetailTab = "mappings" | "history" | "validation" | "transform";
 
 function ConfigDetail({ cfg }: { cfg: Configuration }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("mappings");
@@ -506,6 +703,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
 
   const tabs: { id: DetailTab; label: string; icon: React.ElementType }[] = [
     { id: "mappings", label: "Mappings", icon: Settings },
+    { id: "transform", label: "Transform", icon: Wand2 },
     { id: "history", label: "History", icon: History },
     { id: "validation", label: "Validation", icon: BarChart3 },
   ];
@@ -586,6 +784,7 @@ function ConfigDetail({ cfg }: { cfg: Configuration }) {
         </div>
 
         {activeTab === "mappings" && <MappingsTable key={cfg.id} cfg={cfg} />}
+        {activeTab === "transform" && <TransformPanel key={cfg.id} cfg={cfg} />}
         {activeTab === "history" && <HistoryPanel configId={cfg.id} currentVersion={cfg.version} />}
         {activeTab === "validation" && <ValidationPanel configId={cfg.id} />}
       </div>

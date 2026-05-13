@@ -27,6 +27,7 @@ class Configuration(Base, UUIDMixin, TenantMixin, TimestampMixin):
     hooks: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
     auth_config: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON (encrypted)
     full_config: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON - complete config
+    last_transform_run: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON snapshot of most recent /transform call
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

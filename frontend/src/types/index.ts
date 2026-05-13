@@ -86,6 +86,25 @@ export interface FieldMapping {
 }
 
 // Matches ConfigurationResponse Pydantic schema
+export interface TransformFieldResult {
+  source_field: string;
+  target_field: string;
+  status: string;          // transformed | passthrough | missing | error
+  original: unknown;
+  transformed: unknown;
+  transformation: string | null;
+  error: string | null;
+}
+
+export interface LastTransformRun {
+  source: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  results: TransformFieldResult[];
+  success: boolean;
+  error_count: number;
+  ran_at: string;
+}
+
 export interface Configuration {
   id: string;
   name: string;
@@ -96,6 +115,7 @@ export interface Configuration {
   field_mappings: FieldMapping[];
   transformation_rules?: Record<string, unknown>[];
   hooks?: Record<string, unknown>[];
+  last_transform_run?: LastTransformRun | null;
   created_at: string;
   updated_at: string;
   // legacy optional fields kept for backward compat

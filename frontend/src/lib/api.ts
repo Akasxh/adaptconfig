@@ -207,6 +207,20 @@ export const configurationsApi = {
   //   {type:"probe", data:{...}}            (one per probe, arriving live)
   //   {type:"done",  healthy_count, reachable_count, total_count, summary, ...}
   // Caller passes onEvent to receive each chunk as it arrives.
+  runTransform: (id: string, sourcePayload: Record<string, unknown>) =>
+    api
+      .post<APIResponse<{
+        payload: Record<string, unknown>;
+        results: Array<{
+          source_field: string; target_field: string; status: string;
+          original: unknown; transformed: unknown;
+          transformation: string | null; error: string | null;
+        }>;
+        success: boolean;
+        error_count: number;
+        ran_at: string;
+      }>>(`/api/v1/configurations/${id}/transform`, { source_payload: sourcePayload })
+      .then((r) => r.data),
   connectivityCheckStream: async (
     id: string,
     onEvent: (event: { type: "start" | "probe" | "done" } & Record<string, unknown>) => void,

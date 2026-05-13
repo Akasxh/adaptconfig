@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -45,6 +46,9 @@ from finspark.schemas.configurations import (
     GenerateConfigRequest,
     RollbackRequest,
     RollbackResponse,
+    TransformFieldResult,
+    TransformRunRequest,
+    TransformRunResponse,
     TransitionRequest,
     TransitionResponse,
     VersionComparisonResponse,
@@ -720,26 +724,13 @@ async def get_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
-
-    return APIResponse(
-        data=ConfigurationResponse(
-            id=config.id,
-            name=config.name,
-            adapter_version_id=config.adapter_version_id,
-            document_id=config.document_id,
-            status=config.status,
-            version=config.version,
-            field_mappings=[FieldMapping(**m) for m in field_mappings],
-            created_at=config.created_at,
-            updated_at=config.updated_at,
-        ),
-    )
+    return APIResponse(data=_serialize_config(config))
 
 
 def _serialize_config(config: Configuration) -> ConfigurationResponse:
     """Serialize a Configuration ORM object to a ConfigurationResponse."""
     field_mappings = json.loads(config.field_mappings) if config.field_mappings else []
+    last_run = json.loads(config.last_transform_run) if config.last_transform_run else None
     return ConfigurationResponse(
         id=config.id,
         name=config.name,
@@ -748,6 +739,7 @@ def _serialize_config(config: Configuration) -> ConfigurationResponse:
         status=config.status,
         version=config.version,
         field_mappings=[FieldMapping(**m) for m in field_mappings],
+        last_transform_run=last_run,
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -950,20 +942,7 @@ async def list_configurations(
     configs = result.scalars().all()
 
     return APIResponse(
-        data=[
-            ConfigurationResponse(
-                id=c.id,
-                name=c.name,
-                adapter_version_id=c.adapter_version_id,
-                document_id=c.document_id,
-                status=c.status,
-                version=c.version,
-                field_mappings=json.loads(c.field_mappings) if c.field_mappings else [],
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
-            for c in configs
-        ],
+        data=[_serialize_config(c) for c in configs],
     )
 
 
@@ -1355,4 +1334,63 @@ async def connectivity_check(
         stream(),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/{config_id}/transform", response_model=APIResponse[TransformRunResponse])
+async def run_transform(
+    config_id: str,
+    body: TransformRunRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_tenant_context),
+) -> APIResponse[TransformRunResponse]:
+    """Apply this configuration's field mappings to a source payload.
+
+    Walks each FieldMapping, looks up its named transformation in
+    BUILTIN_TRANSFORMS, applies it to the corresponding source value, and
+    writes to the target. The full run (input + output + per-field statuses)
+    is persisted to configurations.last_transform_run so the result survives
+    page reloads — fixes issue #113 where transformation names were stored
+    but never executed.
+    """
+    from finspark.services.transformation import transform_payload
+
+    stmt = select(Configuration).where(
+        Configuration.id == config_id,
+        Configuration.tenant_id == tenant.tenant_id,
+    )
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+    mappings = json.loads(config.field_mappings) if config.field_mappings else []
+    run = transform_payload(body.source_payload, mappings)
+
+    ran_at = datetime.now(timezone.utc)
+    snapshot = {
+        "source": body.source_payload,
+        "payload": run["payload"],
+        "results": run["results"],
+        "success": run["success"],
+        "error_count": run["error_count"],
+        "ran_at": ran_at.isoformat(),
+    }
+    config.last_transform_run = json.dumps(snapshot)
+    await db.flush()
+
+    return APIResponse(
+        data=TransformRunResponse(
+            payload=run["payload"],
+            results=[TransformFieldResult(**r) for r in run["results"]],
+            success=run["success"],
+            error_count=run["error_count"],
+            ran_at=ran_at,
+        ),
+        message=(
+            f"Transformed {len(run['results'])} field(s) — "
+            f"{run['error_count']} error(s)"
+            if run["error_count"] else
+            f"Transformed {len(run['results'])} field(s) successfully"
+        ),
     )

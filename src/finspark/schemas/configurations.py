@@ -69,8 +69,37 @@ class ConfigurationResponse(BaseModel):
     field_mappings: list[FieldMapping] = []
     transformation_rules: list[TransformationRule] = []
     hooks: list[HookConfig] = []
+    last_transform_run: dict[str, Any] | None = None  # Most recent /transform call payload + results
     created_at: datetime
     updated_at: datetime
+
+
+class TransformRunRequest(BaseModel):
+    """Body for POST /configurations/{id}/transform."""
+
+    source_payload: dict[str, Any]
+
+
+class TransformFieldResult(BaseModel):
+    """Per-field outcome of a transform run."""
+
+    source_field: str
+    target_field: str
+    status: str  # transformed, passthrough, missing, error
+    original: Any | None = None
+    transformed: Any | None = None
+    transformation: str | None = None
+    error: str | None = None
+
+
+class TransformRunResponse(BaseModel):
+    """Response from POST /configurations/{id}/transform."""
+
+    payload: dict[str, Any]
+    results: list[TransformFieldResult]
+    success: bool
+    error_count: int
+    ran_at: datetime
 
 
 class ConfigDiffItem(BaseModel):
