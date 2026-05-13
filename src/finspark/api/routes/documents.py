@@ -1,7 +1,9 @@
 """Document upload and parsing routes."""
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
@@ -33,6 +35,16 @@ from finspark.services.webhook_delivery import deliver_event
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".yaml", ".yml", ".json"}
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # region agent log
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-55a790.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "55a790", "runId": "pre-fix", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # endregion
 
 
 @router.post("/upload", response_model=APIResponse[DocumentUploadResponse])
@@ -114,6 +126,7 @@ async def upload_document(
             raw_text = ""
 
         result = None
+        parsed_with_llm = False
         if use_llm:
             try:
                 from finspark.services.llm.client import get_llm_client
@@ -125,6 +138,7 @@ async def upload_document(
                     raw_text = regex_result.summary
 
                 result = await parser.parse_with_llm(raw_text, safe_name, llm_client)
+                parsed_with_llm = True
                 logger.info("document_parsed_via_llm filename=%s", safe_name)
             except Exception:
                 logger.warning("LLM parsing failed for %s, falling back to regex", safe_name, exc_info=True)
@@ -136,6 +150,25 @@ async def upload_document(
         doc.parsed_result = result.model_dump_json()
         doc.raw_text = result.summary[:5000]
         doc.status = "parsed"
+        # region agent log
+        _agent_debug_log(
+            "H2,H3",
+            "src/finspark/api/routes/documents.py:139",
+            "document parsed before persistence",
+            {
+                "document_id": doc.id,
+                "filename": safe_name,
+                "doc_type": doc_type,
+                "file_type": suffix.lstrip("."),
+                "field_count": len(result.fields),
+                "endpoint_count": len(result.endpoints),
+                "auth_count": len(result.auth_requirements),
+                "service_count": len(result.services),
+                "confidence_score": result.confidence_score,
+                "used_llm": parsed_with_llm,
+            },
+        )
+        # endregion
     except Exception as e:
         doc.status = "failed"
         doc.error_message = str(e)

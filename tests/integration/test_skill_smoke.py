@@ -52,6 +52,20 @@ def _disable_external_io(monkeypatch: pytest.MonkeyPatch) -> None:
         raising=False,
     )
 
+    # Composite endpoint routes smoke through validate_config_llm when AI is on;
+    # disable it so the rule-based simulator path drives this deterministic test.
+    from finspark.services.simulation.simulator import IntegrationSimulator
+
+    async def _raise_self(self, *_a, **_kw):  # noqa: ANN001
+        raise RuntimeError("LLM validator disabled in skill smoke tests")
+
+    monkeypatch.setattr(
+        IntegrationSimulator,
+        "validate_config_llm",
+        _raise_self,
+        raising=False,
+    )
+
 
 async def _seed_three_endpoint_adapter(db_session: AsyncSession) -> str:
     """Create a generic 3-endpoint adapter so the smoke produces 7/7.

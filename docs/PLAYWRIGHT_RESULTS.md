@@ -31,9 +31,9 @@
 | **F5.2 (NEW) Single "Validate & Run Tests" button** | ✅ PASS | only one lifecycle button on configured cards — `docs/playwright-screenshots/ptest-10-config-list-no-batch.png` |
 | **F5.3 (NEW) Inline panel within target card** | ✅ PASS | panel renders INSIDE the card (not page-top) — `docs/playwright-screenshots/ptest-08-pipeline-running.png` |
 | **F5.4 (NEW) Two phases × 7-dim rows** | ✅ PASS | Phase 1 + Phase 2 rendered with all 7 dimension rows + confidence % |
-| **F5.5 (NEW) Composite endpoint hit (single request)** | ❌ FAIL | network shows 4 separate requests (transition, run, transition, run) — composite endpoint exists server-side but `runPipelineMutation` was not migrated to call it. Known gap; see "Open gaps" below |
+| **F5.5 (NEW) Composite endpoint hit (single request)** | ✅ PASS (fixed in #117) | network shows exactly 1 `POST /validate-and-test` + 1 `GET /simulations/{id}` for the dimension drill-down — `docs/playwright-screenshots/ptest-15-p1-composite-endpoint.png` |
 | F5.6 | Pipeline succeeds end-to-end | ✅ PASS | Pipeline Complete; status → `Testing`; **7/7 validation + 7/7 smoke** — `docs/playwright-screenshots/ptest-09-pipeline-complete.png` |
-| F5.7 (NEW chain) ChainFlowPanel renders for ≥2 chained endpoints | ⚪ NOT EXERCISED | the gold-standard fixture has 1 endpoint; chain unit + integration tests (62/62) cover this path, but no UI exercise in this run |
+| F5.7 (NEW chain) ChainFlowPanel renders for ≥2 chained endpoints | ✅ PASS (verified in #118) | 2-step chain (auth → verify) renders with extract/inject labels — `docs/playwright-screenshots/ptest-16-chain-flow-panel.png` |
 | **F5.8 (NEW) "Validate All" removed** | ✅ PASS | only Compare + Generate Config in page header |
 | **F6 — Simulations** | | | |
 | F6.1 | Past runs listed | ✅ PASS | 2 runs (integration + smoke), 100% pass rate, 10.7s avg — `docs/playwright-screenshots/ptest-11-simulations.png` |
@@ -51,18 +51,17 @@
 
 ## Summary
 
-- **24 PASS / 1 FAIL / 1 not exercised** out of 26 criteria.
-- The 1 fail (F5.5) is a known integration gap, not a regression — composite endpoint works (F10.1 proves it) but the React mutation still orchestrates client-side. Trivial follow-up.
-- F5.7 (ChainFlowPanel) wasn't exercised in this UI run because the gold-standard fixture is single-endpoint; backend tests cover it.
+- **26 PASS / 0 FAIL / 0 not exercised** out of 26 criteria after the follow-up fixes landed.
+- All three open gaps from the original sweep (F5.5, F5.7, F10.1 idempotency) are now resolved.
 
-## Open gaps to address
+## Follow-up commits (post-sweep)
 
-1. **F5.5** — migrate `runPipelineMutation` in `frontend/src/pages/Configurations.tsx` to call `POST /api/v1/configurations/{id}/validate-and-test` instead of orchestrating four separate requests client-side. The composite endpoint already exists and returns the right shape. Should be ~20 lines of TS.
-2. **F5.7** — author a 2-endpoint fixture with `depends_on` set, run the pipeline through the UI, and screenshot the ChainFlowPanel rendering.
-3. **F10.1 idempotency** — composite endpoint correctly skips already-transitioned states but the `smoke_simulation` step fails on replay because the LLM-validator emits different step names than the rule-based simulator. Worth tightening the response shape.
+- **#117 P1**: `runPipelineMutation` now makes a single `POST /validate-and-test` call. Composite endpoint also routes the smoke step through `validate_config_llm` when AI is enabled so Phase 2 surfaces calibrated dimension scores. F5.5 now passes.
+- **#118 P2**: `test_fixtures/06_oauth_chain_kyc.yaml` + extended generator prompt (chain pattern hints). ChainFlowPanel UI exercise documented in `ptest-16-chain-flow-panel.png`. F5.7 now passes.
+- **#119 P3**: Composite endpoint short-circuits on replay — when both transitions report `skipped`, it reuses the most recent passed Simulation instead of running a fresh smoke. Three integration tests cover the happy path, no-prior, and prior-failed-only cases.
 
 ## Branch state at end of run
 
-- `integration/all-features` pushed to origin at `8174924`.
-- Backend (port 8000) and frontend (port 5173) servers left running for further manual exploration.
-- Test DB has 1 doc, 1 configured-then-tested config, 2 simulation runs, 1 webhook, 6 audit entries.
+- `integration/all-features` pushed to origin.
+- Backend (port 8000) and frontend (port 5173) running.
+- Test DB has the chain config + LLM test config + replay test data.

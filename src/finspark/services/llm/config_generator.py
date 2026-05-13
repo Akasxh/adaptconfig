@@ -40,9 +40,17 @@ Return a JSON object with these fields:
   "base_url": "string - the API base URL",
   "endpoints": [
     {{
+      "id": "string - short snake_case identifier, REQUIRED for chains (e.g. 'auth', 'verify')",
       "path": "string",
       "method": "GET|POST|PUT|DELETE",
-      "description": "string"
+      "description": "string",
+      "depends_on": "string|null - id of an upstream endpoint this one needs",
+      "extract": {{
+        "<output_key>": "string - JSONPath into this endpoint's response (e.g. '$.access_token')"
+      }},
+      "inject": {{
+        "<target>": "string - template that pulls upstream-extracted values, e.g. 'headers.Authorization': 'Bearer {{{{auth.access_token}}}}'"
+      }}
     }}
   ],
   "auth": {{
@@ -92,6 +100,27 @@ Populate every section. Use values from the parsed document where present;
 otherwise infer secure defaults appropriate for the adapter type
 (API key/OAuth2/Bearer). Always include at least one hook for on_error
 (e.g. retry_with_backoff or alert) and one for on_request (e.g. log_masked).
+
+## API chaining (multi-step flows)
+
+When the document or adapter describes a multi-step API flow — auth → resource,
+or token → action → status — emit MULTIPLE endpoints with `id`, `depends_on`,
+`extract`, and `inject` set. Common patterns to recognise:
+
+- **OAuth2 client_credentials → protected resource**: id=`auth` (POST /oauth/token,
+  no depends_on, extract `{"access_token": "$.access_token"}`); id=`verify`
+  (POST /resource, depends_on=`auth`, inject `{"headers.Authorization": "Bearer {{{{auth.access_token}}}}"}`)
+- **Payment flow**: tokenize → authorize → capture (each step depends on the previous)
+- **KYC flow**: initiate_session → upload_doc → fetch_result
+- **Account Aggregator**: create_consent → notify_user → fetch_data
+
+Template syntax for `inject`: `{{{{<upstream_id>.<extracted_key>}}}}` substitutes the
+value `extract`ed from the upstream endpoint into the current request. Inject
+targets: `headers.X-Foo`, `body.field`, `body.nested.path`, `path_params.id`,
+`query_params.filter`.
+
+For SINGLE-endpoint configs (no chain needed), `id` is still recommended but
+`depends_on`/`extract`/`inject` can be omitted or `null`/`{{}}`.
 """
 
 

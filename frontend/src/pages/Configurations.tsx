@@ -1668,87 +1668,105 @@ export default function Configurations() {
   // One-click pipeline: configured → validate (LLM 7-dim) → testing → smoke.
   // Optimistically renders skeleton step rows the moment the user clicks,
   // then snaps each row to the real verdict when the LLM call resolves.
+  // Single composite endpoint call replaces the legacy 4-request orchestration.
+  // The optimistic seed rows render while the request is in flight and snap to
+  // real verdicts when the response lands. If the smoke run produced a
+  // simulation_id we fetch the per-step breakdown for the dimension table.
   const runPipelineMutation = useMutation({
-    mutationFn: async ({ id, name, currentStatus }: { id: string; name: string; currentStatus: string }) => {
-      // Phase 1 — Validation
+    mutationFn: async ({ id, name }: { id: string; name: string; currentStatus: string }) => {
+      // Optimistic: paint both phases as running before the await
       setPipeline({
         configId: id,
         configName: name,
         phase: "validating",
         validation: VALIDATION_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-        testing: [],
+        testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
       });
 
-      if (currentStatus === "configured") {
-        try {
-          await configurationsApi.transition(id, "validating");
-        } catch {
-          // already validating, ignore
-        }
-      }
-
-      const valResp = await simulationsApi.run({ configuration_id: id, test_type: "integration" });
-      const valData = valResp.data;
-      const valSteps: PipelineStep[] = (valData?.steps || []).map((s: any) => ({
-        name: s.step_name,
-        status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
-        confidence: s.confidence_score ?? undefined,
-        analysis: s.error_message || undefined,
-      }));
-      setPipeline((s) => (s ? { ...s, validation: valSteps.length ? valSteps : s.validation } : s));
-
-      if (!valData || valData.status !== "passed") {
-        setPipeline((s) =>
-          s
-            ? {
-                ...s,
-                phase: "error",
-                errorMsg: valData
-                  ? `Validation: ${valData.passed_tests}/${valData.total_tests} dimensions passed`
-                  : "Validation request failed",
-              }
-            : s,
-        );
+      const resp = await configurationsApi.validateAndTest(id, {
+        test_type: "smoke",
+        reason: "ui:pipeline",
+      });
+      const data = resp.data;
+      if (!data) {
+        setPipeline((s) => (s ? { ...s, phase: "error", errorMsg: "Pipeline request failed" } : s));
         return;
       }
 
-      // Phase 2 — Smoke tests
-      setPipeline((s) =>
-        s
-          ? {
-              ...s,
-              phase: "testing",
-              testing: TEST_STEPS_SEED.map((n) => ({ name: n, status: "running" as StepStatus })),
-            }
-          : s,
-      );
+      // The composite returns 4 high-level pipeline steps:
+      //   transition_to_validating | validate | transition_to_testing | smoke_simulation
+      // We use `validate` for Phase 1's overall status + the dimension breakdown
+      // we fetch separately; `smoke_simulation` for Phase 2.
+      const validateStep = data.steps.find((s) => s.name === "validate");
+      const smokeStep = data.steps.find((s) => s.name === "smoke_simulation");
 
-      try {
-        await configurationsApi.transition(id, "testing");
-      } catch {
-        // already testing, ignore
+      // Phase 1: real per-dimension breakdown. The composite doesn't include the
+      // 7 LLM dimensions, only the aggregate validate verdict. So we fetch the
+      // smoke run's step records (which include the 7 dimensions when AI is on).
+      let validation: PipelineStep[];
+      if (data.simulation_id) {
+        try {
+          const simResp = await simulationsApi.get(data.simulation_id);
+          const simSteps = simResp.data?.steps ?? [];
+          if (simSteps.length > 0) {
+            validation = simSteps.map((s) => ({
+              name: s.step_name,
+              status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
+              confidence: s.confidence_score ?? undefined,
+              analysis: s.error_message || undefined,
+            }));
+          } else {
+            validation = [
+              {
+                name: "validate",
+                status: (validateStep?.status === "passed" ? "passed" : "failed") as StepStatus,
+                analysis: validateStep?.error ?? undefined,
+              },
+            ];
+          }
+        } catch {
+          // simulation fetch failed — fall back to the aggregate
+          validation = [
+            {
+              name: "validate",
+              status: (validateStep?.status === "passed" ? "passed" : "failed") as StepStatus,
+              analysis: validateStep?.error ?? undefined,
+            },
+          ];
+        }
+      } else {
+        validation = [
+          {
+            name: "validate",
+            status: (validateStep?.status === "passed" ? "passed" : "failed") as StepStatus,
+            analysis: validateStep?.error ?? undefined,
+          },
+        ];
       }
 
-      const testResp = await simulationsApi.run({ configuration_id: id, test_type: "smoke" });
-      const testData = testResp.data;
-      const testSteps: PipelineStep[] = (testData?.steps || []).map((s: any) => ({
-        name: s.step_name,
-        status: (s.status === "passed" ? "passed" : "failed") as StepStatus,
-        confidence: s.confidence_score ?? undefined,
-        analysis: s.error_message || undefined,
-      }));
+      // Phase 2: a single aggregate row driven by the composite's smoke step.
+      const testing: PipelineStep[] = smokeStep
+        ? [
+            {
+              name: `smoke_simulation (${data.passed_tests}/${data.total_tests})`,
+              status: (smokeStep.status === "passed" ? "passed" : "failed") as StepStatus,
+              confidence: data.total_tests > 0 ? data.passed_tests / data.total_tests : undefined,
+              analysis: smokeStep.error ?? undefined,
+            },
+          ]
+        : [];
+
+      const overallPassed = data.overall_status === "passed";
       setPipeline((s) =>
         s
           ? {
               ...s,
-              testing: testSteps.length ? testSteps : s.testing,
-              phase: testData && testData.status === "passed" ? "done" : "error",
-              errorMsg:
-                testData && testData.status === "passed"
-                  ? undefined
-                  : testData
-                    ? `Smoke: ${testData.passed_tests}/${testData.total_tests} tests passed`
-                    : "Smoke request failed",
+              phase: overallPassed ? "done" : "error",
+              validation,
+              testing,
+              errorMsg: overallPassed
+                ? undefined
+                : `Pipeline ${data.overall_status}: ${data.passed_tests}/${data.total_tests} smoke tests passed`,
             }
           : s,
       );

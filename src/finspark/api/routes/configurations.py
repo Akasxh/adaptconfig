@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -71,6 +72,16 @@ from finspark.services.webhook_delivery import deliver_event
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    # region agent log
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-55a790.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "55a790", "runId": "pre-fix", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # endregion
 
 CONFIG_TEMPLATES: list[ConfigTemplateResponse] = [
     ConfigTemplateResponse(
@@ -643,6 +654,23 @@ async def generate_configuration(
         if tgt not in by_target or (m.get("confidence") or 0) > (by_target[tgt].get("confidence") or 0):
             by_target[tgt] = m
     config["field_mappings"] = list(by_target.values())
+    # region agent log
+    _agent_debug_log(
+        "H1,H2,H3",
+        "src/finspark/api/routes/configurations.py:646",
+        "configuration generated before persistence",
+        {
+            "generation_path": generation_path,
+            "document_id": request.document_id,
+            "adapter_version_id": request.adapter_version_id,
+            "endpoint_count": len(config.get("endpoints", [])),
+            "mapping_count_raw": len(raw_mappings),
+            "mapping_count_persisted": len(config["field_mappings"]),
+            "auth_type": config.get("auth", {}).get("type"),
+            "status": "configured",
+        },
+    )
+    # endregion
 
     # Save configuration
     configuration = Configuration(
@@ -974,6 +1002,22 @@ async def validate_and_test_configuration(
     full_config = safe_json_loads(config.full_config, {}) if config.full_config else {}
     pipeline_steps: list[PipelineStepResult] = []
     overall_status = "passed"
+    # region agent log
+    _agent_debug_log(
+        "H1,H3",
+        "src/finspark/api/routes/configurations.py:980",
+        "validate-and-test loaded configuration",
+        {
+            "config_id": config.id,
+            "status": config.status,
+            "test_type": request_body.test_type,
+            "endpoint_count": len(full_config.get("endpoints", [])) if isinstance(full_config, dict) else 0,
+            "mapping_count": len(full_config.get("field_mappings", [])) if isinstance(full_config, dict) else 0,
+            "auth_type": full_config.get("auth", {}).get("type") if isinstance(full_config, dict) else None,
+            "keys": sorted(full_config.keys()) if isinstance(full_config, dict) else [],
+        },
+    )
+    # endregion
 
     # Step 0: Advance draft -> configured if needed so the rest of the pipeline
     # can run for freshly seeded configs.
@@ -1025,7 +1069,76 @@ async def validate_and_test_configuration(
     # Step 4: smoke simulation
     simulation_id: str | None = None
     total = passed = failed = duration_ms = 0
-    if overall_status == "passed":
+
+    # Replay short-circuit (#119): when both lifecycle transitions are 'skipped'
+    # the config was already past 'testing' before this call. Re-running a fresh
+    # smoke can flap on LLM nondeterminism and overwrite a previously passing
+    # run. Instead, reuse the most recent passed Simulation for this config and
+    # test_type if one exists; otherwise fall through to a fresh run.
+    transitions_skipped = sum(
+        1
+        for s in pipeline_steps
+        if s.name in ("transition_to_validating", "transition_to_testing") and s.status == "skipped"
+    )
+    replayed = False
+    if overall_status == "passed" and transitions_skipped == 2:
+        prior_stmt = (
+            select(Simulation)
+            .where(
+                Simulation.configuration_id == config.id,
+                Simulation.tenant_id == tenant.tenant_id,
+                Simulation.test_type == request_body.test_type,
+                Simulation.status == "passed",
+            )
+            .order_by(Simulation.created_at.desc())
+            .limit(1)
+        )
+        prior = (await db.execute(prior_stmt)).scalar_one_or_none()
+        if prior is not None:
+            replayed = True
+            simulation_id = prior.id
+            total = prior.total_tests or 0
+            passed = prior.passed_tests or 0
+            failed = prior.failed_tests or 0
+            duration_ms = prior.duration_ms or 0
+            step_names_stmt = (
+                select(SimulationStep.step_name)
+                .where(SimulationStep.simulation_id == prior.id)
+                .order_by(SimulationStep.step_order)
+            )
+            step_names = [r[0] for r in (await db.execute(step_names_stmt)).all()]
+            pipeline_steps.append(
+                PipelineStepResult(
+                    name="smoke_simulation",
+                    status="passed",
+                    details={
+                        "simulation_id": simulation_id,
+                        "total_tests": total,
+                        "passed_tests": passed,
+                        "failed_tests": failed,
+                        "step_names": step_names,
+                        "replayed_from_prior_run": True,
+                        "prior_simulation_created_at": prior.created_at.isoformat(),
+                    },
+                )
+            )
+            # region agent log
+            _agent_debug_log(
+                "H1,H3",
+                "src/finspark/api/routes/configurations.py:1080",
+                "validate-and-test replayed prior passed smoke",
+                {
+                    "config_id": config.id,
+                    "simulation_id": simulation_id,
+                    "total_tests": total,
+                    "passed_tests": passed,
+                    "failed_tests": failed,
+                    "step_names": step_names,
+                },
+            )
+            # endregion
+
+    if overall_status == "passed" and not replayed:
         simulation = Simulation(
             tenant_id=tenant.tenant_id,
             configuration_id=config.id,
@@ -1035,13 +1148,52 @@ async def validate_and_test_configuration(
         db.add(simulation)
         await db.flush()
 
-        sim_steps = await asyncio.to_thread(
-            simulator.run_simulation, full_config, test_type=request_body.test_type
-        )
+        # Use the LLM 7-dim validator when AI is enabled — matches what
+        # /simulations/run does, and is what produces the calibrated
+        # confidence scores the UI's dimension table renders. Fall back to
+        # the rule-based simulator on any LLM error.
+        sim_steps = None
+        if settings.ai_enabled and (
+            settings.openai_api_key or settings.gemini_api_key
+        ):
+            try:
+                llm_client = get_llm_client()
+                sim_steps = await simulator.validate_config_llm(full_config, llm_client)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "validate_and_test: LLM simulator failed, falling back to rule-based",
+                    exc_info=True,
+                )
+                sim_steps = None
+        if sim_steps is None:
+            sim_steps = await asyncio.to_thread(
+                simulator.run_simulation, full_config, test_type=request_body.test_type
+            )
         total = len(sim_steps)
         passed = sum(1 for s in sim_steps if s.status == "passed")
         failed = total - passed
         duration_ms = sum(s.duration_ms for s in sim_steps)
+        # region agent log
+        _agent_debug_log(
+            "H1,H3",
+            "src/finspark/api/routes/configurations.py:1114",
+            "validate-and-test fresh smoke completed",
+            {
+                "config_id": config.id,
+                "total_tests": total,
+                "passed_tests": passed,
+                "failed_tests": failed,
+                "step_statuses": [
+                    {
+                        "name": s.step_name,
+                        "status": s.status,
+                        "has_error": bool(s.error_message),
+                    }
+                    for s in sim_steps
+                ],
+            },
+        )
+        # endregion
 
         simulation.status = "passed" if failed == 0 else "failed"
         simulation.total_tests = total

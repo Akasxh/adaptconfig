@@ -95,6 +95,9 @@ api.interceptors.response.use(
         window.location.href = "/login";
       }
 
+      // #region agent log
+      fetch('http://127.0.0.1:7533/ingest/50ddb59d-052f-4b49-aca0-65b90fb97803',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'55a790'},body:JSON.stringify({sessionId:'55a790',runId:'pre-fix',hypothesisId:'H4,H5',location:'frontend/src/lib/api.ts:98',message:'API request failed',data:{status,code:error.code,url:originalRequest?.url,method:originalRequest?.method,message:error.message},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       console.error("[API Error]", error.response?.status, error.message);
     }
     return Promise.reject(error);
@@ -201,14 +204,24 @@ export const configurationsApi = {
     api
       .post<APIResponse<ConfigValidationResult>>(`/api/v1/configurations/${id}/validate`)
       .then((r) => r.data),
-  validateAndTest: (id: string, params?: { test_type?: string; reason?: string }) =>
-    api
+  validateAndTest: (id: string, params?: { test_type?: string; reason?: string }) => {
+    const payload = { test_type: params?.test_type ?? "smoke", reason: params?.reason };
+    // #region agent log
+    fetch('http://127.0.0.1:7533/ingest/50ddb59d-052f-4b49-aca0-65b90fb97803',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'55a790'},body:JSON.stringify({sessionId:'55a790',runId:'pre-fix',hypothesisId:'H1,H3',location:'frontend/src/lib/api.ts:206',message:'validateAndTest request started',data:{configId:id,testType:payload.test_type,hasReason:!!payload.reason,baseURL:api.defaults.baseURL ?? ''},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return api
       .post<APIResponse<ValidateAndTestResponse>>(
         `/api/v1/configurations/${id}/validate-and-test`,
-        { test_type: params?.test_type ?? "smoke", reason: params?.reason },
+        payload,
         { timeout: 60_000 }
       )
-      .then((r) => r.data),
+      .then((r) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7533/ingest/50ddb59d-052f-4b49-aca0-65b90fb97803',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'55a790'},body:JSON.stringify({sessionId:'55a790',runId:'pre-fix',hypothesisId:'H1,H3',location:'frontend/src/lib/api.ts:214',message:'validateAndTest response received',data:{configId:id,success:r.data.success,overallStatus:r.data.data?.overall_status,finalState:r.data.data?.final_state,totalTests:r.data.data?.total_tests,passedTests:r.data.data?.passed_tests,failedTests:r.data.data?.failed_tests,steps:r.data.data?.steps?.map((s)=>({name:s.name,status:s.status,error:!!s.error}))},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        return r.data;
+      });
+  },
   transition: (id: string, targetState: string, reason?: string) =>
     api
       .post<

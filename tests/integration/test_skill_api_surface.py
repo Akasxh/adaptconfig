@@ -83,6 +83,22 @@ def _force_rule_based_config_generation(monkeypatch: pytest.MonkeyPatch) -> None
         raising=False,
     )
 
+    # The composite validate-and-test endpoint now also routes the smoke step
+    # through validate_config_llm when AI is enabled. The skill-surface tests
+    # need that path forced to fall back too so the assertions stay
+    # deterministic against the rule-based simulator output.
+    from finspark.services.simulation.simulator import IntegrationSimulator
+
+    async def _force_llm_validator_fallback(self, *_a, **_kw):  # noqa: ANN001
+        raise RuntimeError("LLM validator disabled in skill-surface tests")
+
+    monkeypatch.setattr(
+        IntegrationSimulator,
+        "validate_config_llm",
+        _force_llm_validator_fallback,
+        raising=False,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

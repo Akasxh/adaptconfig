@@ -1,0 +1,183 @@
+openapi: 3.0.3
+info:
+  title: OAuth2 + Aadhaar eKYC Chained Flow
+  version: 1.0.0
+  description: |
+    Two-step authenticated eKYC flow designed to exercise AdaptConfig's
+    chain runtime (issue #109).
+
+    Step 1 — POST /oauth/token  → exchanges client credentials for a
+    short-lived Bearer access_token.
+    Step 2 — POST /verify/aadhaar → requires the Bearer token from step 1
+    in the Authorization header; performs the Aadhaar eKYC verification.
+
+    The LLM config generator should produce an `endpoints` array with two
+    entries: id=`auth` (no depends_on, extracts access_token) and
+    id=`verify` (depends_on=`auth`, injects the Bearer token into
+    Authorization header).
+
+x-chain:
+  pattern: oauth2_then_resource
+  steps:
+    - id: auth
+      description: Exchange client_id+client_secret for an access_token
+      extract:
+        access_token: $.access_token
+        expires_in: $.expires_in
+    - id: verify
+      depends_on: auth
+      description: Verify Aadhaar with the Bearer token from step 1
+      inject:
+        headers.Authorization: "Bearer {{auth.access_token}}"
+
+x-auth:
+  type: oauth2
+  flow: client_credentials
+  token_url: https://api.ekyc.example.com/oauth/token
+  scopes: [ekyc.verify]
+  token_expiry_seconds: 3600
+
+x-retry-policy:
+  max_attempts: 3
+  initial_backoff_ms: 250
+  retryable_status_codes: [429, 500, 502, 503, 504]
+
+x-error-handling:
+  envelope_schema: ErrorEnvelope
+  on_4xx: surface_to_caller_no_retry
+  on_5xx: retry_with_backoff
+  fallback_strategy: queue_for_manual_review
+
+x-security:
+  tls_version_minimum: "1.3"
+  pii_masking:
+    aadhaar_number: keep_last_4
+  credential_storage: encrypted_vault_only
+  audit_logging: all_requests_and_responses
+
+servers:
+  - url: https://api.ekyc.example.com/v1
+    description: Production (TLS 1.3)
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.ekyc.example.com/oauth/token
+          scopes:
+            ekyc.verify: Initiate verification
+
+  schemas:
+    TokenRequest:
+      type: object
+      required: [client_id, client_secret, grant_type]
+      properties:
+        client_id: { type: string }
+        client_secret: { type: string, description: "Encrypted vault only" }
+        grant_type: { type: string, enum: [client_credentials] }
+        scope: { type: string, example: "ekyc.verify" }
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: Bearer token to inject into downstream Authorization headers
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds until token expires
+
+    VerifyRequest:
+      type: object
+      required: [aadhaar_number, customer_name, consent]
+      properties:
+        aadhaar_number:
+          type: string
+          pattern: '^[0-9]{12}$'
+        customer_name:
+          type: string
+        consent:
+          type: string
+          description: DEPA consent artefact id
+        mobile_number:
+          type: string
+          pattern: '^[6-9][0-9]{9}$'
+
+    VerifyResponse:
+      type: object
+      properties:
+        verified: { type: boolean }
+        reference_id: { type: string }
+
+    ErrorEnvelope:
+      type: object
+      required: [error_code, error_message, retryable]
+      properties:
+        error_code: { type: string }
+        error_message: { type: string }
+        retryable: { type: boolean }
+
+paths:
+  /oauth/token:
+    post:
+      operationId: getAccessToken
+      summary: Step 1 — Exchange credentials for an access token.
+      description: |
+        First step of the chained eKYC flow. Returns a Bearer access_token
+        that the downstream /verify/aadhaar call uses in its Authorization
+        header. The chain runtime should extract `$.access_token` and
+        inject it as `Bearer {{auth.access_token}}` into step 2.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '200':
+          description: Access token issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401':
+          description: Invalid client credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /verify/aadhaar:
+    post:
+      operationId: verifyAadhaar
+      summary: Step 2 — Verify Aadhaar using the Bearer token from step 1.
+      description: |
+        Depends on /oauth/token producing an access_token. The chain runtime
+        must inject Authorization: Bearer <token> from the auth step before
+        this call is made. Returns the verification result.
+      security:
+        - OAuth2: [ekyc.verify]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyRequest' }
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerifyResponse' }
+        '401':
+          description: Bearer token invalid or expired — re-run /oauth/token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: UIDAI transient — retry with backoff
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
