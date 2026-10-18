@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks
 from finspark.api.routes.configurations import _augment_with_rule_based
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.llm.client import GeminiAPIError
+from finspark.services.simulation.simulator import IntegrationSimulator
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -320,6 +321,74 @@ class TestGenerateConfigurationPipeline:
 
         assert "llm_with_rule_augment" in result.message
         assert result.data.status == "configured"
+
+    @pytest.mark.asyncio
+    async def test_llm_generated_config_is_simulator_ready(self) -> None:
+        """LLM output is normalized to the internal schema before persistence."""
+        from finspark.api.routes.configurations import generate_configuration
+        from finspark.schemas.configurations import GenerateConfigRequest
+
+        request = GenerateConfigRequest(
+            document_id="doc-1",
+            adapter_version_id="av-1",
+            name="Test Config",
+        )
+        llm_config = {
+            **_SAMPLE_LLM_CONFIG,
+            "hooks": [
+                {"event": "on_request", "action": "log_masked", "config": {}},
+                {"event": "on_error", "action": "retry_with_backoff", "config": {}},
+            ],
+        }
+        db = self._make_mock_db(self._make_mock_doc(), self._make_mock_av())
+        persisted_config: dict[str, Any] = {}
+        original_add = db.add
+
+        def capture_add(obj: Any) -> None:
+            nonlocal persisted_config
+            if hasattr(obj, "full_config") and obj.full_config:
+                import json
+
+                persisted_config = json.loads(obj.full_config)
+            original_add(obj)
+
+        db.add = capture_add
+
+        with (
+            patch("finspark.api.routes.configurations.settings") as mock_settings,
+            patch(
+                "finspark.api.routes.configurations.get_llm_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "finspark.api.routes.configurations.generate_config_llm",
+                new_callable=AsyncMock,
+                return_value=llm_config,
+            ),
+        ):
+            mock_settings.ai_enabled = True
+            mock_settings.llm_provider = "openai"
+            mock_settings.openai_api_key = "test-openai-key"
+            mock_settings.gemini_api_key = ""
+
+            await generate_configuration(
+                request=request,
+                background_tasks=BackgroundTasks(),
+                db=db,
+                tenant=self._make_mock_tenant(),
+                generator=ConfigGenerator(),
+                audit=self._make_mock_audit(),
+            )
+
+        assert persisted_config["retry_policy"] == {
+            "max_retries": 3,
+            "backoff_factor": 2,
+            "retry_on_status": [429, 500, 502, 503],
+        }
+        assert [h["type"] for h in persisted_config["hooks"]] == ["pre_request", "on_error"]
+        steps = IntegrationSimulator().run_simulation(persisted_config, test_type="full")
+        assert {step.step_name: step.status for step in steps}["hooks_validation"] == "passed"
+        assert {step.step_name: step.status for step in steps}["retry_logic_validation"] == "passed"
 
     @pytest.mark.asyncio
     async def test_openai_llm_path_does_not_require_gemini_key(self) -> None:

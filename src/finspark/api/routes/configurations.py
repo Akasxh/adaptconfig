@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -56,6 +57,10 @@ from finspark.services.chain import is_chain
 from finspark.services.config_engine.diff_engine import ConfigDiffEngine
 from finspark.services.config_engine.field_mapper import ConfigGenerator
 from finspark.services.config_engine.rollback import RollbackManager
+from finspark.services.config_engine.runtime_config import (
+    load_runtime_config,
+    persist_runtime_section,
+)
 from finspark.services.lifecycle import IntegrationLifecycle, InvalidTransitionError
 from finspark.services.llm.client import GeminiAPIError, get_llm_client
 from finspark.services.llm.config_generator import generate_config_llm
@@ -68,8 +73,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/configurations", tags=["Configurations"])
 
 
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-b375c3.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "b375c3", "runId": "mvp-debug-1", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+
+
 def _llm_generation_enabled() -> bool:
-    """Return whether config generation should attempt the configured LLM provider."""
+    """Return whether config generation should attempt the configured LLM provider.
+
+    Mirrors :func:`finspark.services.llm.client.is_llm_ready` but reads
+    ``settings`` directly from this module so existing tests can patch
+    ``finspark.api.routes.configurations.settings`` to flip the gate.
+    """
     if not settings.ai_enabled:
         return False
     provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
@@ -276,6 +294,61 @@ def _validate_config(full_config: dict[str, Any]) -> ConfigValidationResult:
     )
 
 
+def _normalize_generated_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize LLM/rule output to the schema consumed by runtime services."""
+    normalized = dict(config)
+
+    retry_policy = normalized.get("retry_policy")
+    if not isinstance(retry_policy, dict):
+        retry_count = normalized.get("retry_count")
+        retry_policy = {
+            "max_retries": retry_count if isinstance(retry_count, int) else 3,
+            "backoff_factor": 2
+            if normalized.get("retry_backoff") == "exponential"
+            else 1,
+            "retry_on_status": [429, 500, 502, 503],
+        }
+    else:
+        retry_policy = dict(retry_policy)
+        retry_policy.setdefault("max_retries", 3)
+        retry_policy.setdefault(
+            "backoff_factor",
+            2 if normalized.get("retry_backoff") == "exponential" else 1,
+        )
+        retry_policy.setdefault("retry_on_status", [429, 500, 502, 503])
+    normalized["retry_policy"] = retry_policy
+
+    event_to_type = {
+        "on_request": "pre_request",
+        "on_response": "post_response",
+        "on_error": "on_error",
+        "on_timeout": "on_timeout",
+        "on_retry": "on_error",
+    }
+    hooks: list[dict[str, Any]] = []
+    for raw_hook in normalized.get("hooks", []) or []:
+        if not isinstance(raw_hook, dict):
+            continue
+        hook = dict(raw_hook)
+        hook_type = hook.get("type") or hook.get("hook_type")
+        event = hook.get("event")
+        if not hook_type and event:
+            hook_type = event_to_type.get(str(event), str(event))
+        if hook_type:
+            hook["type"] = hook_type
+        if "handler" not in hook and hook.get("action"):
+            hook["handler"] = hook["action"]
+        if "name" not in hook:
+            hook["name"] = str(hook.get("action") or hook.get("event") or hook.get("type") or "hook")
+        if "params" not in hook and isinstance(hook.get("config"), dict):
+            hook["params"] = hook["config"]
+        hook.setdefault("is_active", True)
+        hooks.append(hook)
+    normalized["hooks"] = hooks
+
+    return normalized
+
+
 @router.post("/batch-validate", response_model=APIResponse[list[BatchValidationItem]])
 async def batch_validate_configurations(
     body: BatchConfigRequest,
@@ -297,7 +370,7 @@ async def batch_validate_configurations(
             items.append(BatchValidationItem(config_id=cid, error="Configuration not found"))
             continue
 
-        full_config = json.loads(config.full_config) if config.full_config else {}
+        full_config = load_runtime_config(config)
         items.append(
             BatchValidationItem(
                 config_id=cid,
@@ -330,7 +403,7 @@ async def batch_simulate_configurations(
             items.append(BatchSimulationItem(config_id=cid, error="Configuration not found"))
             continue
 
-        full_config = json.loads(config.full_config) if config.full_config else {}
+        full_config = load_runtime_config(config)
         steps = simulator.run_simulation(full_config, test_type="smoke")
         total = len(steps)
         passed = sum(1 for s in steps if s.status == "passed")
@@ -511,7 +584,7 @@ async def export_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    full_config = json.loads(config.full_config) if config.full_config else {}
+    full_config = load_runtime_config(config)
     export_data = {
         "id": config.id,
         "name": config.name,
@@ -656,6 +729,22 @@ async def generate_configuration(
         if adapter_version.response_schema
         else {},
     }
+    # region agent log
+    _agent_debug_log(
+        "H1,H2",
+        "src/finspark/api/routes/configurations.py:generate_input",
+        "configuration generation input",
+        {
+            "document_id": request.document_id,
+            "adapter_version_id": request.adapter_version_id,
+            "parsed_field_count": len(parsed_result.get("fields", []) or []),
+            "parsed_endpoint_count": len(parsed_result.get("endpoints", []) or []),
+            "adapter_endpoint_count": len(av_dict.get("endpoints", []) or []),
+            "adapter_request_schema_keys": list((av_dict.get("request_schema") or {}).keys())[:10],
+            "llm_ready": _llm_generation_enabled(),
+        },
+    )
+    # endregion
 
     use_llm = _llm_generation_enabled()
     generation_path = "rule_based"
@@ -736,6 +825,22 @@ async def generate_configuration(
         if tgt not in by_target or (m.get("confidence") or 0) > (by_target[tgt].get("confidence") or 0):
             by_target[tgt] = m
     config["field_mappings"] = list(by_target.values())
+    config = _normalize_generated_config(config)
+    # region agent log
+    _agent_debug_log(
+        "H2",
+        "src/finspark/api/routes/configurations.py:generate_output",
+        "configuration generated runtime shape",
+        {
+            "generation_path": generation_path,
+            "mapping_count": len(config.get("field_mappings", []) or []),
+            "endpoint_count": len(config.get("endpoints", []) or []),
+            "has_retry_policy": isinstance(config.get("retry_policy"), dict),
+            "hook_shapes": sorted({tuple(sorted((h or {}).keys())) for h in (config.get("hooks", []) or [])}),
+            "config_keys": sorted(config.keys())[:25],
+        },
+    )
+    # endregion
 
     # Save configuration
     configuration = Configuration(
@@ -753,13 +858,14 @@ async def generate_configuration(
     db.add(configuration)
     await db.flush()
 
-    # Create history entry
+    # Initial history entry must use the shape RollbackManager understands;
+    # storing the raw config dict makes a future rollback wipe full_config.
     history = ConfigurationHistory(
         tenant_id=tenant.tenant_id,
         configuration_id=configuration.id,
         version=1,
         change_type="created",
-        new_value=json.dumps(config),
+        new_value=json.dumps(RollbackManager.serialise_config(configuration)),
         changed_by=tenant.tenant_name,
     )
     db.add(history)
@@ -873,7 +979,20 @@ async def update_configuration(
         # inline red message.
         new_mappings = [fm.model_dump(exclude={"transformation_expr_error"}) for fm in body.field_mappings]
         expr_errors = _collect_expr_errors(new_mappings)
-        config.field_mappings = json.dumps(new_mappings)
+        persist_runtime_section(config, "field_mappings", new_mappings)
+        # region agent log
+        _agent_debug_log(
+            "H3",
+            "src/finspark/api/routes/configurations.py:update_mappings",
+            "configuration mappings patched",
+            {
+                "config_id": config_id,
+                "sidecar_mapping_count": len(new_mappings),
+                "runtime_mapping_count": len(load_runtime_config(config).get("field_mappings", []) or []),
+                "expr_error_count": len(expr_errors),
+            },
+        )
+        # endregion
     if body.notes is not None:
         config.notes = body.notes
 
@@ -917,7 +1036,7 @@ async def validate_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    full_config = json.loads(config.full_config) if config.full_config else {}
+    full_config = load_runtime_config(config)
 
     return APIResponse(data=_validate_config(full_config))
 
@@ -1072,6 +1191,22 @@ async def validate_and_test_configuration(
     if not config or not config.full_config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
+    runtime_config = load_runtime_config(config)
+    # region agent log
+    _agent_debug_log(
+        "H3,H4",
+        "src/finspark/api/routes/configurations.py:validate_and_test_entry",
+        "validate-and-test entry state",
+        {
+            "config_id": config_id,
+            "status_before": config.status,
+            "runtime_mapping_count": len(runtime_config.get("field_mappings", []) or []),
+            "runtime_endpoint_count": len(runtime_config.get("endpoints", []) or []),
+            "has_full_config": bool(config.full_config),
+        },
+    )
+    # endregion
+
     _best_effort_transition(
         config,
         ConfigStatus.VALIDATING,
@@ -1090,6 +1225,13 @@ async def validate_and_test_configuration(
     )
 
     if validation.status != "passed":
+        _best_effort_transition(
+            config,
+            ConfigStatus.CONFIGURED,
+            actor=tenant.tenant_name,
+            reason="validate-and-test:validation_failed",
+        )
+        await db.flush()
         return APIResponse(
             data=ValidateAndTestResponse(
                 configuration_id=config_id,
@@ -1123,7 +1265,30 @@ async def validate_and_test_configuration(
     )
 
     pipeline_passed = testing.status == "passed"
+    if not pipeline_passed:
+        _best_effort_transition(
+            config,
+            ConfigStatus.CONFIGURED,
+            actor=tenant.tenant_name,
+            reason="validate-and-test:testing_failed",
+        )
+        await db.flush()
     phase = "done" if pipeline_passed else "error"
+    # region agent log
+    _agent_debug_log(
+        "H4",
+        "src/finspark/api/routes/configurations.py:validate_and_test_exit",
+        "validate-and-test exit state",
+        {
+            "config_id": config_id,
+            "validation_status": validation.status,
+            "testing_status": testing.status,
+            "pipeline_passed": pipeline_passed,
+            "status_after": config.status,
+            "phase": phase,
+        },
+    )
+    # endregion
     error_message = (
         None
         if pipeline_passed
@@ -1165,7 +1330,7 @@ async def compare_configurations(
         config = result.scalar_one_or_none()
         if not config:
             raise HTTPException(status_code=404, detail=f"Configuration {cid} not found")
-        configs[cid] = json.loads(config.full_config) if config.full_config else {}
+        configs[cid] = load_runtime_config(config)
 
     diff = diff_engine.compare(
         configs[config_a_id],

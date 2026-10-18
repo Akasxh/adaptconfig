@@ -3,8 +3,7 @@
 import logging
 from typing import Any
 
-from finspark.core.config import settings
-from finspark.services.llm.client import get_llm_client
+from finspark.services.llm.client import get_llm_client, is_llm_ready
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ async def extract_entities_llm(text: str) -> dict[str, Any] | None:
 
     Returns parsed dict on success, None on failure (caller falls back to regex).
     """
-    if not settings.ai_enabled or not settings.gemini_api_key:
+    if not is_llm_ready():
         return None
 
     truncated = text[:15000]

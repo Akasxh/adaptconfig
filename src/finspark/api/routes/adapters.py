@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -37,6 +38,14 @@ from finspark.services.registry.deprecation import DeprecationTracker
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/adapters", tags=["Adapters"])
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-b375c3.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "b375c3", "runId": "mvp-debug-1", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
 
 
 @router.get("/", response_model=APIResponse[AdapterListResponse])
@@ -215,6 +224,23 @@ async def suggest_adapter(
 
     suggester = AdapterSuggester(llm_client=llm_client)
     response = await suggester.suggest(parsed, adapters)
+    # region agent log
+    _agent_debug_log(
+            "H5",
+        "src/finspark/api/routes/adapters.py:suggest_adapter",
+        "adapter suggestion result",
+        {
+            "document_id": payload.document_id,
+            "parsed_service_count": len(parsed.get("services_identified", []) or []),
+            "parsed_endpoint_count": len(parsed.get("endpoints", []) or []),
+            "adapter_count": len(adapters),
+            "llm_used": llm_client is not None,
+            "match_count": len(response.matches),
+            "top_score": response.matches[0].score if response.matches else None,
+            "suggest_custom": response.suggest_custom,
+        },
+    )
+    # endregion
     return APIResponse(data=response)
 
 

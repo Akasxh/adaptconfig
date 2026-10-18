@@ -35,6 +35,22 @@ const api = axios.create({
   },
 });
 
+const agentDebugLog = (hypothesisId: string, location: string, message: string, data: Record<string, unknown>) => {
+  fetch("http://127.0.0.1:7533/ingest/50ddb59d-052f-4b49-aca0-65b90fb97803", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "b375c3" },
+    body: JSON.stringify({
+      sessionId: "b375c3",
+      runId: "mvp-debug-1",
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+};
+
 // Attach Bearer token from localStorage on every request
 api.interceptors.request.use((config) => {
   const token = getToken();
@@ -96,6 +112,16 @@ api.interceptors.response.use(
       }
 
       console.error("[API Error]", error.response?.status, error.message);
+      // region agent log
+      agentDebugLog("H5", "frontend/src/lib/api.ts:api_error", "frontend API request failed", {
+        url: originalRequest?.url,
+        method: originalRequest?.method,
+        status,
+        code: error.code,
+        baseURL: originalRequest?.baseURL,
+        message: error.message,
+      });
+      // endregion
     }
     return Promise.reject(error);
   }

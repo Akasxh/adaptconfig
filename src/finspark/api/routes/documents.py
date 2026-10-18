@@ -1,8 +1,11 @@
 """Document upload and parsing routes."""
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import select
@@ -35,8 +38,21 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".yaml", ".yml", ".json"}
 
 
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-b375c3.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "b375c3", "runId": "mvp-debug-1", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+
+
 def _llm_parsing_enabled() -> bool:
-    """Return whether document parsing should attempt the configured LLM provider."""
+    """Return whether document parsing should attempt the configured LLM provider.
+
+    Mirrors :func:`finspark.services.llm.client.is_llm_ready` but reads
+    ``settings`` directly from this module so existing tests can patch
+    ``finspark.api.routes.documents.settings`` to flip the gate.
+    """
     if not settings.ai_enabled:
         return False
     provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
@@ -101,11 +117,16 @@ async def upload_document(
 
     await asyncio.to_thread(_write_file, file_path, file_bytes)
 
-    # Create document record
+    # ``.yml`` is YAML; FileType only enumerates "yaml" so storing "yml"
+    # makes the response model validation reject the upload.
+    file_type = suffix.lstrip(".")
+    if file_type == "yml":
+        file_type = "yaml"
+
     doc = Document(
         tenant_id=tenant.tenant_id,
         filename=safe_name,
-        file_type=suffix.lstrip("."),
+        file_type=file_type,
         file_size=file_path.stat().st_size,
         doc_type=doc_type,
         status="parsing",
@@ -146,6 +167,24 @@ async def upload_document(
         doc.parsed_result = result.model_dump_json()
         doc.raw_text = result.summary[:5000]
         doc.status = "parsed"
+        # region agent log
+        _agent_debug_log(
+            "H1",
+            "src/finspark/api/routes/documents.py:parsed_result",
+            "document upload parsed",
+            {
+                "document_id": doc.id,
+                "filename_ext": suffix,
+                "doc_type": doc_type,
+                "use_llm": use_llm,
+                "field_count": len(getattr(result, "fields", []) or []),
+                "endpoint_count": len(getattr(result, "endpoints", []) or []),
+                "auth_count": len(getattr(result, "auth_requirements", []) or []),
+                "service_count": len(getattr(result, "services_identified", []) or []),
+                "status": doc.status,
+            },
+        )
+        # endregion
     except Exception as e:
         doc.status = "failed"
         doc.error_message = str(e)

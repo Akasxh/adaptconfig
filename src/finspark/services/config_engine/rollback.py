@@ -275,3 +275,14 @@ class RollbackManager:
             "status": config.status,
             "version": config.version,
         }
+
+    @staticmethod
+    def serialise_config(config: Configuration) -> dict[str, Any]:
+        """Public alias for the snapshot shape ``rollback`` knows how to apply.
+
+        Routes that create the initial ``ConfigurationHistory`` row (generate /
+        MCP create) must store this exact shape. Storing the bare full-config
+        dict caused rollback to overwrite ``full_config`` with ``null`` because
+        ``snapshot.get("full_config")`` returned ``None``.
+        """
+        return RollbackManager._serialise_config(config)

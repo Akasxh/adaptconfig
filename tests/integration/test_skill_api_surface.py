@@ -275,3 +275,45 @@ class TestValidateAndTestComposite:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["data"]["configuration_id"] == config.id
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_returns_lifecycle_to_configured(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A failed validation run must not strand the config in validating."""
+        av = await _seed_adapter_with_version(db_session)
+        full_config = {
+            "adapter_name": "Aadhaar eKYC Provider",
+            "version": "v1",
+            "base_url": "",
+            "auth": {},
+            "endpoints": [{"path": "/verify", "method": "POST"}],
+            "field_mappings": [
+                {"source_field": "aadhaar_number", "target_field": "aadhaar", "confidence": 0.95},
+            ],
+        }
+        config = Configuration(
+            tenant_id="test-tenant",
+            name="Broken eKYC",
+            adapter_version_id=av.id,
+            status="configured",
+            version=1,
+            field_mappings=json.dumps(full_config["field_mappings"]),
+            transformation_rules=json.dumps([]),
+            hooks=json.dumps([]),
+            full_config=json.dumps(full_config),
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        resp = await client.post(
+            f"/api/v1/configurations/{config.id}/validate-and-test"
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["phase"] == "error"
+        assert data["testing"] is None
+        assert data["final_status"] == "configured"
+
+        await db_session.refresh(config)
+        assert config.status == "configured"

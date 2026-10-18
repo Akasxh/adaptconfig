@@ -16,19 +16,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from finspark.core.config import settings
 from finspark.core.database import async_session_factory
 from finspark.core.json_utils import safe_json_loads
 from finspark.models.adapter import Adapter, AdapterVersion
 from finspark.models.configuration import Configuration, ConfigurationHistory
 from finspark.models.document import Document
 from finspark.services.config_engine.field_mapper import ConfigGenerator
-from finspark.services.llm.client import GeminiAPIError, get_llm_client
+from finspark.services.config_engine.rollback import RollbackManager
+from finspark.services.llm.client import GeminiAPIError, get_llm_client, is_llm_ready
 from finspark.services.llm.config_generator import generate_config_llm
 from finspark.services.parsing.document_parser import DocumentParser
 from finspark.services.simulation.simulator import IntegrationSimulator
@@ -40,6 +41,14 @@ logger = logging.getLogger(__name__)
 # a follow-up").
 MCP_TENANT_ID = "mcp-bridge"
 MCP_TENANT_NAME = "AdaptConfig MCP Bridge"
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-b375c3.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "b375c3", "runId": "mvp-debug-1", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
 
 
 class BridgeError(Exception):
@@ -181,7 +190,7 @@ class BridgeService:
                 configuration_id=configuration.id,
                 version=1,
                 change_type="created",
-                new_value=json.dumps(config),
+                new_value=json.dumps(RollbackManager.serialise_config(configuration)),
                 changed_by=MCP_TENANT_NAME,
             )
             session.add(history)
@@ -252,9 +261,30 @@ class BridgeService:
 
         final_response: dict[str, Any] = {}
         for step in reversed(steps):
-            if step.step_name.startswith("endpoint_test_") and step.actual_response:
+            if not step.actual_response:
+                continue
+            name = step.step_name or ""
+            if name.startswith(("endpoint_test_", "chain_step_")):
                 final_response = step.actual_response
                 break
+
+        # region agent log
+        _agent_debug_log(
+            "H5",
+            "src/finspark/mcp/service.py:invoke_config",
+            "mcp invoke produced simulation result",
+            {
+                "config_id": config_id,
+                "payload_keys": sorted(overrides.keys())[:20],
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "final_response_keys": sorted(final_response.keys())[:20],
+                "step_names": [s.step_name for s in steps[:12]],
+                "failed_steps": [s.step_name for s in steps if s.status != "passed"][:12],
+            },
+        )
+        # endregion
 
         return {
             "config_id": config_id,
@@ -273,9 +303,7 @@ class BridgeService:
     # ------------------------------------------------------------------
     async def _parse_document_text(self, document_text: str) -> Any:
         """Parse the document with the LLM path when enabled, regex otherwise."""
-        use_llm = settings.ai_enabled and (
-            bool(settings.openai_api_key) or bool(settings.gemini_api_key)
-        )
+        use_llm = is_llm_ready()
         if use_llm:
             try:
                 client = get_llm_client()
@@ -399,9 +427,7 @@ class BridgeService:
         """Build the integration config dict, mirroring the HTTP route."""
         parsed_dict = parsed_result.model_dump() if hasattr(parsed_result, "model_dump") else dict(parsed_result)
 
-        use_llm = settings.ai_enabled and (
-            bool(settings.openai_api_key) or bool(settings.gemini_api_key)
-        )
+        use_llm = is_llm_ready()
         generation_path = "rule_based"
         config: dict[str, Any] = {}
 

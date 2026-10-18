@@ -178,3 +178,21 @@ def get_llm_client() -> Any:
         else:
             _shared_client = GeminiClient()
     return _shared_client
+
+
+def is_llm_ready() -> bool:
+    """Return True when the configured LLM provider has a usable API key.
+
+    Single source of truth for "should we even try the LLM path". Routes
+    that previously checked only ``gemini_api_key`` silently disabled the
+    LLM whenever the provider was switched to OpenAI; this helper keeps
+    every gate aligned with ``settings.llm_provider``.
+    """
+    from finspark.core.config import settings as _s  # local import: avoid cycle
+
+    if not _s.ai_enabled:
+        return False
+    provider = (getattr(_s, "llm_provider", "openai") or "openai").lower()
+    if provider == "openai":
+        return bool(getattr(_s, "openai_api_key", ""))
+    return bool(getattr(_s, "gemini_api_key", ""))

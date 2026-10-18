@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -30,6 +31,7 @@ from finspark.schemas.simulations import (
     SimulationStepResult,
 )
 from finspark.services.chain import ChainCycleError, ChainExecutor
+from finspark.services.config_engine.runtime_config import load_runtime_config
 from finspark.services.simulation.simulator import IntegrationSimulator
 from finspark.services.webhook_delivery import deliver_event
 
@@ -38,8 +40,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
 
 
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, object]) -> None:
+    try:
+        with open("/Users/cero/Desktop/PROJECTS/finspark/.cursor/debug-b375c3.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId": "b375c3", "runId": "mvp-debug-1", "hypothesisId": hypothesis_id, "location": location, "message": message, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+
+
 def _llm_validation_enabled(*, is_chain_config: bool) -> bool:
-    """Return whether simulation should attempt the configured LLM validator."""
+    """Return whether simulation should attempt the configured LLM validator.
+
+    Mirrors :func:`finspark.services.llm.client.is_llm_ready` but reads
+    ``settings`` from this module so tests can patch
+    ``finspark.api.routes.simulations.settings`` to flip the gate.
+    """
     if is_chain_config or not settings.ai_enabled:
         return False
     provider = (getattr(settings, "llm_provider", "openai") or "openai").lower()
@@ -108,7 +123,7 @@ async def run_simulation_for_config(
     attempted via ``get_llm_client()`` (OpenAI when ``FINSPARK_LLM_PROVIDER``
     is ``openai``); rule-based ``run_simulation`` is used otherwise.
     """
-    full_config = safe_json_loads(config.full_config, {})
+    full_config = load_runtime_config(config)
 
     simulation = Simulation(
         tenant_id=tenant.tenant_id,
@@ -153,6 +168,26 @@ async def run_simulation_for_config(
     total_duration = sum(s.duration_ms for s in steps)
 
     simulation.status = "passed" if failed == 0 else "failed"
+    # region agent log
+    _agent_debug_log(
+        "H4,H6",
+        "src/finspark/api/routes/simulations.py:simulation_result",
+        "simulation computed result",
+        {
+            "config_id": config.id,
+            "status_before": config.status,
+            "test_type": test_type,
+            "is_chain_config": is_chain_config,
+            "use_llm": use_llm,
+            "simulation_status": simulation.status,
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "step_names": [s.step_name for s in steps[:12]],
+            "failed_steps": [s.step_name for s in steps if s.status != "passed"][:12],
+        },
+    )
+    # endregion
     simulation.total_tests = total
     simulation.passed_tests = passed
     simulation.failed_tests = failed
@@ -406,7 +441,7 @@ async def stream_simulation(
     if not config or not config.full_config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    full_config = json.loads(config.full_config)
+    full_config = load_runtime_config(config)
     test_type = simulation.test_type
 
     async def run_and_stream() -> AsyncGenerator[str, None]:

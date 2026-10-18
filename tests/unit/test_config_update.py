@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from unittest.mock import patch
 
 import pytest
 
@@ -76,6 +77,58 @@ class TestConfigUpdateEndpoint:
         assert len(returned_mappings) == 1
         assert returned_mappings[0]["target_field"] == "pan_id"
         assert returned_mappings[0]["source_field"] == "pan_number"
+
+    async def test_patch_keeps_full_config_field_mappings_in_sync(
+        self, client, db_session
+    ) -> None:
+        """Validation reads full_config, so PATCH must update both mapping stores."""
+        config = _make_config()
+        db_session.add(config)
+        await db_session.flush()
+
+        new_mappings = [
+            {
+                "source_field": "pan_number",
+                "target_field": "pan_id",
+                "transformation": "upper",
+                "confidence": 0.95,
+                "is_confirmed": True,
+            }
+        ]
+
+        patch_resp = await client.patch(
+            f"/api/v1/configurations/{config.id}",
+            json={"field_mappings": new_mappings},
+        )
+        assert patch_resp.status_code == 200
+
+        validate_resp = await client.post(f"/api/v1/configurations/{config.id}/validate")
+        assert validate_resp.status_code == 200
+        validation = validate_resp.json()["data"]
+        assert validation["coverage_score"] == 1.0
+        assert validation["unmapped_source_fields"] == []
+
+        export_resp = await client.get(f"/api/v1/configurations/{config.id}/export")
+        assert export_resp.status_code == 200
+        exported = export_resp.json()["config"]
+        assert exported["field_mappings"][0]["source_field"] == "pan_number"
+        assert exported["field_mappings"][0]["target_field"] == "pan_id"
+
+        with patch("finspark.api.routes.simulations.settings") as mock_settings:
+            mock_settings.ai_enabled = False
+            mock_settings.gemini_api_key = ""
+            mock_settings.openai_api_key = ""
+            sim_resp = await client.post(
+                "/api/v1/simulations/run",
+                json={"configuration_id": config.id, "test_type": "smoke"},
+            )
+        assert sim_resp.status_code == 200
+        endpoint_step = next(
+            step
+            for step in sim_resp.json()["data"]["steps"]
+            if step["step_name"].startswith("endpoint_test_")
+        )
+        assert endpoint_step["request_payload"] == {"pan_number": "ABCDE1234F"}
 
     async def test_patch_updates_name(self, client, db_session) -> None:
         config = _make_config()
