@@ -62,9 +62,6 @@
 {\small\color{ts} FinSpark Hackathon $\cdot$ April 2026}
 
 \vspace{0.5em}
-{\small\textcolor{teal}{\url{https://adaptconfig-frontend-production.up.railway.app}}}
-
-\vspace{0.2em}
 {\scriptsize\color{ts} \url{https://github.com/Akasxh/adaptconfig}}
 \end{center}
 \end{frame}
@@ -95,7 +92,7 @@
 \end{itemize}
 \end{block}
 \vspace{0.3em}
-{\small\textcolor{warn}{Cost:} 8 APIs $\times$ Rs 1--2L each = \textbf{Rs 8--16 Lakhs}}
+{\small\textcolor{warn}{Delay:} 8 APIs $\times$ 2--4 weeks each $\to$ \textbf{4--8 months to launch}}
 \end{column}
 \end{columns}
 \end{frame}
@@ -122,7 +119,7 @@ Auth schemes & \textcolor{ok}{2} & OAuth2 + API Key \\
 Parse confidence & \textcolor{ok}{95\%} & \\
 Fields mapped & \textcolor{ok}{28/28} & at 100\% confidence \\
 Simulation & \textcolor{ok}{8/8 PASSED} & all steps green \\
-Total time & \textcolor{teal}{< 5 seconds} & end to end \\
+Total time & \textcolor{teal}{$\sim$ 40s} & end to end \\
 \bottomrule
 \end{tabular}
 }
@@ -146,7 +143,7 @@ Total time & \textcolor{teal}{< 5 seconds} & end to end \\
 \midrule
 Frontend & & React 18 $\cdot$ TypeScript $\cdot$ Tailwind CSS $\cdot$ Recharts \\
 Backend & & FastAPI $\cdot$ SQLAlchemy (async) $\cdot$ Pydantic v2 \\
-AI Engine & & \textcolor{teal}{Google Gemini 3 Flash} (REST API) \\
+AI Engine & & \textcolor{teal}{OpenAI GPT-4o} (REST API) \\
 Services & & Document Parser $\cdot$ Config Engine $\cdot$ Simulator \\
 Database & & PostgreSQL (prod) $\cdot$ SQLite (dev) \\
 Deploy & & Railway $\cdot$ Docker $\cdot$ nginx $\cdot$ Alembic migrations \\
@@ -159,7 +156,7 @@ Auth & & JWT $\cdot$ PBKDF2 $\cdot$ RBAC $\cdot$ per-user tenant isolation \\
 \vspace{0.3em}
 \begin{center}
 {\small\color{ts} Backend serves 34 API endpoints across 10 route modules.\\
-AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy matching.}
+AI pipeline: GPT-4o generates config $\to$ Rule engine validates with fuzzy matching.}
 \end{center}
 \end{frame}
 
@@ -178,7 +175,7 @@ AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy ma
   \node[box] (sim) at (2.5,0.7) {Simulator};
   \node[box] (evt) at (5.3,0.7) {Event System};
   \node[box] (db) at (-2.2,-0.5) {SQLite / PostgreSQL};
-  \node[box] (gemini) at (1.5,-0.5) {Gemini Flash LLM};
+  \node[box] (gpt) at (1.5,-0.5) {GPT-4o LLM};
   \node[box] (wh) at (5.3,-0.5) {Webhook Delivery};
   \draw[arrow] (fe) -- (be);
   \draw[arrow] (be) -- (parser);
@@ -187,8 +184,8 @@ AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy ma
   \draw[arrow] (be) -- (evt);
   \draw[arrow] (parser) -- (db);
   \draw[arrow] (config) -- (db);
-  \draw[arrow] (config) -- (gemini);
-  \draw[arrow] (parser) -- (gemini);
+  \draw[arrow] (config) -- (gpt);
+  \draw[arrow] (parser) -- (gpt);
   \draw[arrow] (evt) -- (wh);
 \end{tikzpicture}
 }
@@ -201,7 +198,7 @@ AI pipeline: Gemini 3 generates config $\to$ Rule engine validates with fuzzy ma
 \begin{column}{0.48\textwidth}
 \textbf{Hybrid AI + Rule Engine:}
 \begin{enumerate}
-\item \textcolor{teal}{Gemini Flash} generates config from document + adapter schema
+\item \textcolor{teal}{GPT-4o} generates config from document + adapter schema
 \item \textbf{Rule engine} augments with:
   \begin{itemize}
   \item 100+ Indian fintech synonyms
@@ -285,7 +282,7 @@ Pure rules & AI disabled \\
 \midrule
 \texttt{users} & Auth, RBAC (admin/editor/viewer) & tenant owner \\
 \texttt{documents} & Uploaded specs (PDF/DOCX/YAML) & tenant-scoped \\
-\texttt{adapters} & 9 pre-built adapters & global catalog \\
+\texttt{adapters} & 8 pre-built adapters & global catalog \\
 \texttt{adapter\_versions} & Multi-version per adapter & FK $\to$ adapters \\
 \texttt{configurations} & Generated integration configs & FK $\to$ adapter, doc \\
 \texttt{config\_history} & Versioned snapshots for rollback & FK $\to$ configs \\
@@ -324,7 +321,6 @@ Pure rules & AI disabled \\
 \item CORS restricted to known origins
 \item CSP, HSTS, X-Frame headers
 \item Rate limiting (100 req/min)
-\item PII masking (Aadhaar, PAN, phone)
 \item AES-256 Fernet encryption
 \item Path traversal protection
 \item Alembic database migrations
@@ -384,7 +380,7 @@ Pure rules & AI disabled \\
 \begin{column}{0.48\textwidth}
 \textbf{Two-stage pipeline:}
 \begin{enumerate}
-\item \textcolor{teal}{Gemini 3 Flash} generates config from document + adapter schema
+\item \textcolor{teal}{GPT-4o} generates config from document + adapter schema
 \item \textbf{Rule engine} augments with fuzzy matching, Indian fintech synonyms, confidence scores
 \end{enumerate}
 
@@ -403,6 +399,14 @@ Pure rules & AI disabled \\
 \includegraphics[width=0.85\textwidth]{field-mappings-new.png}
 \end{center}
 {\small\centering Lifecycle stepper $\cdot$ Editable targets $\cdot$ Transform dropdowns $\cdot$ Confidence bars $\cdot$ Export $\cdot$ History\par}
+\end{frame}
+
+% ── 10c. TRANSFORMATION ENGINE — RUN RESULTS ────────────────────────────────
+\begin{frame}{Transformation Engine — Per-Field Results}
+\begin{center}
+\includegraphics[width=0.95\textwidth]{transform-results-new.png}
+\end{center}
+{\small\centering Target payload preview $\cdot$ Per-field \textcolor{ok}{\textbf{TRANSFORMED}} / \textcolor{err}{\textbf{ERROR}} status $\cdot$ One bad row never blocks the rest\par}
 \end{frame}
 
 % ── 11. SIMULATION ───────────────────────────────────────────────────────────
@@ -429,8 +433,16 @@ Pure rules & AI disabled \\
 \end{columns}
 \end{frame}
 
+% ── 11b. CHAIN TEST ─────────────────────────────────────────────────────────
+\begin{frame}{Chain Test — Multi-Call API Linkage}
+\begin{center}
+\includegraphics[width=0.97\textwidth]{chain-graph-new.png}
+\end{center}
+{\small\centering Topological execution from the source document $\cdot$ Extracted values propagate down the chain (\texttt{access\_token}, \texttt{customer\_id}, \ldots) $\cdot$ Failed step $\to$ downstream marked \textbf{blocked}, never wrongly attributed\par}
+\end{frame}
+
 % ── 12. ADAPTERS ─────────────────────────────────────────────────────────────
-\begin{frame}{Adapter Catalog (9 Pre-Built + Custom)}
+\begin{frame}{Adapter Catalog (8 Pre-Built + Custom)}
 \begin{center}
 \includegraphics[width=0.85\textwidth]{adapters-9.png}
 \end{center}
@@ -473,6 +485,30 @@ Pure rules & AI disabled \\
 \end{columns}
 \end{frame}
 
+% ── 14b. SKILLS.MD — AGENT-READY ────────────────────────────────────────────
+\begin{frame}{Drop-in Skill: AdaptConfig as an Agent Tool}
+\begin{columns}[T]
+\begin{column}{0.58\textwidth}
+\includegraphics[width=\textwidth]{skills-md-new.png}
+\end{column}
+\begin{column}{0.40\textwidth}
+{\small
+\textbf{One file. Any agent.}\\[0.3em]
+Ship a single \texttt{adaptconfig.skill.md} alongside the API. Claude / Cursor / any LLM picks it up and drives the platform end-to-end --- mirrors the SPA 1:1:
+
+\vspace{0.4em}
+{\centering\textbf{upload $\to$ suggest adapter $\to$ generate $\to$ validate-and-test $\to$ deploy}\par}
+
+\vspace{0.7em}
+\textcolor{teal}{\textbf{Creativity\,---}} agents compose workflows we never coded.
+
+\vspace{0.3em}
+\textcolor{teal}{\textbf{Ease of use\,---}} no SDK, no SPA, just curl-able endpoints.
+}
+\end{column}
+\end{columns}
+\end{frame}
+
 % ── 15. RESULTS ──────────────────────────────────────────────────────────────
 \begin{frame}{Results}
 \begin{center}
@@ -484,7 +520,6 @@ Pure rules & AI disabled \\
 Time per integration & 2--4 weeks & $<$ 5 minutes & \textcolor{ok}{$\sim$500x faster} \\
 Field mapping errors & Common & AI-validated & \textcolor{ok}{Near zero} \\
 Pre-deploy testing & Rare & 8-step pipeline & \textcolor{ok}{Always} \\
-Cost per platform & Rs 8--16L & Minimal & \textcolor{ok}{$>$90\% savings} \\
 \bottomrule
 \end{tabular}
 }
@@ -500,7 +535,7 @@ Cost per platform & Rs 8--16L & Minimal & \textcolor{ok}{$>$90\% savings} \\
 \textbf{Metric} & \textbf{Value} \\
 \midrule
 API Endpoints & 34 \\
-Adapters & 9 \\
+Adapters & 8 \\
 Tests & 899 \\
 Coverage & 82\% \\
 Pages & 8 \\
@@ -518,8 +553,8 @@ Pages & 8 \\
 Parse confidence & 95\% \\
 Mapping accuracy & 100\% \\
 Simulation & 8/8 pass \\
-Config gen & $<$ 5s \\
-Doc parse & $<$ 1s \\
+Config gen & $\sim$ 30s \\
+Doc parse & $\sim$ 10s \\
 \bottomrule
 \end{tabular}
 }
@@ -529,10 +564,6 @@ Doc parse & $<$ 1s \\
 
 % ── 15. LIVE DEMO ────────────────────────────────────────────────────────────
 \begin{frame}{Live Demo}
-\begin{center}
-{\large\textcolor{teal}{\url{https://adaptconfig-frontend-production.up.railway.app}}}
-\end{center}
-
 \vspace{0.5em}
 \begin{columns}[T]
 \begin{column}{0.48\textwidth}
@@ -540,7 +571,7 @@ Doc parse & $<$ 1s \\
 \item \textbf{Register / Login}\\{\small Create account or use demo credentials}
 \item \textbf{Upload API Spec}\\{\small Drag \& drop YAML, PDF, or DOCX}
 \item \textbf{View Parsed Fields}\\{\small 28 fields, 4 endpoints, 2 auth schemes}
-\item \textbf{Generate Config}\\{\small Gemini 3 + Rule Engine pipeline}
+\item \textbf{Generate Config}\\{\small GPT-4o + Rule Engine pipeline}
 \end{enumerate}
 \end{column}
 \begin{column}{0.48\textwidth}
@@ -572,8 +603,6 @@ Doc parse & $<$ 1s \\
 
 {\small
 \begin{tabular}{rl}
-\textcolor{teal}{Live} & \url{https://adaptconfig-frontend-production.up.railway.app} \\[3pt]
-\textcolor{teal}{API} & \url{https://adaptconfig-api-production.up.railway.app/docs} \\[3pt]
 \textcolor{teal}{Code} & \url{https://github.com/Akasxh/adaptconfig} \\
 \end{tabular}
 }

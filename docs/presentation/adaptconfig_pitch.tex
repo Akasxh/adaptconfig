@@ -1,0 +1,286 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\usetheme{metropolis}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{hyperref}
+
+% ── Brand colors (matches main deck) ────────────────────────────────────────
+\definecolor{bg}{HTML}{08090E}
+\definecolor{teal}{HTML}{38E5CD}
+\definecolor{surface}{HTML}{151922}
+\definecolor{tp}{HTML}{F1F5F9}
+\definecolor{ts}{HTML}{94A3B8}
+\definecolor{ok}{HTML}{34D399}
+\definecolor{warn}{HTML}{FBBF24}
+\definecolor{err}{HTML}{F87171}
+
+\setbeamercolor{normal text}{fg=tp,bg=bg}
+\setbeamercolor{alerted text}{fg=teal}
+\setbeamercolor{frametitle}{fg=tp,bg=surface}
+\setbeamercolor{title}{fg=tp}
+\setbeamercolor{subtitle}{fg=ts}
+\setbeamercolor{block title}{fg=tp,bg=surface}
+\setbeamercolor{block body}{bg=surface}
+\setbeamercolor{item}{fg=teal}
+\setbeamercolor{structure}{fg=teal}
+
+\setbeamerfont{title}{series=\bfseries,size=\LARGE}
+\setbeamerfont{frametitle}{series=\bfseries}
+
+\graphicspath{{../images/}}
+
+\title{\textcolor{teal}{Adapt}Config}
+\subtitle{Spec to running integration. Minutes, not months.}
+\author{}
+\institute{}
+\date{}
+
+\begin{document}
+
+% ── 1. TITLE ─────────────────────────────────────────────────────────────────
+\begin{frame}[plain]
+\vspace{1.4cm}
+\begin{center}
+{\Huge\bfseries \textcolor{teal}{Adapt}Config}
+
+\vspace{0.6em}
+{\Large\color{tp} The integration layer for Indian fintech.}
+
+\vspace{0.3em}
+{\large\color{ts} Spec $\to$ running integration. \textbf{Minutes, not months.}}
+
+\vspace{1.2em}
+{\color{teal}\rule{6cm}{0.5pt}}
+
+\vspace{0.8em}
+{\normalsize\textbf{Team Nucleolus} \quad$\cdot$\quad IIT Patna}
+\end{center}
+\end{frame}
+
+% ── 2. PROBLEM ───────────────────────────────────────────────────────────────
+\begin{frame}{Every fintech is a plumbing project}
+\vspace{0.4em}
+\begin{center}
+{\Large An Indian lending platform must integrate with \textcolor{teal}{8+ external APIs}}
+\end{center}
+
+\vspace{0.3em}
+\begin{center}
+{\small CIBIL $\cdot$ Aadhaar eKYC $\cdot$ GST $\cdot$ UPI $\cdot$ Payment $\cdot$ Fraud $\cdot$ SMS / Email $\cdot$ Account Aggregator}
+\end{center}
+
+\vspace{0.8em}
+\begin{center}
+{\Large \textbf{Each integration}: \textcolor{warn}{2--4 weeks} of senior-engineer time}
+
+\vspace{0.3em}
+{\Large \textbf{Per platform}: \textcolor{err}{4--8 months} before a single product ships}
+\end{center}
+
+\vspace{0.6em}
+\begin{center}
+{\small\color{ts} Engineers spend half a year on glue code that doesn't differentiate them.}
+\end{center}
+\end{frame}
+
+% ── 3. THE REAL COST ─────────────────────────────────────────────────────────
+\begin{frame}{The cost isn't the contract --- it's the delay}
+\vspace{0.2em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{For a 10-engineer fintech:}
+\begin{itemize}
+\item \textcolor{teal}{4--8 months} of dev-time per integration project
+\item Field-mapping errors $\to$ \textcolor{err}{loan rejections \& compliance misses} in prod
+\item Re-integration on every API version bump
+\item No pre-deploy testing $\to$ regressions land on customers
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Real outcome:}
+\begin{itemize}
+\item Competitors ship 6 months earlier
+\item Senior engineers burn out on plumbing
+\item Audit \& RBI compliance gaps surface late
+\end{itemize}
+\vspace{0.4em}
+\begin{block}{\textcolor{warn}{The hidden tax}}
+A team of 10 loses $\sim$\textbf{4{,}000 engineer-hours per year} to integration glue that no customer pays for.
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 4. HOW IT'S SOLVED TODAY ─────────────────────────────────────────────────
+\begin{frame}{What people do today --- and why each falls short}
+\vspace{0.4em}
+\begin{center}
+{\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Approach} & \textbf{Speed} & \textbf{Why it fails} \\
+\midrule
+Hand-code in-house & 2--4 weeks & Senior dev time; breaks on every version bump \\
+iPaaS (Workato, MuleSoft) & Days & \textcolor{err}{No Indian fintech depth}; heavy licence cost \\
+Plain LLM wrappers & Minutes & \textcolor{err}{Hallucinate mappings} --- unsafe in banking \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+
+\vspace{0.8em}
+\begin{center}
+{\large All three force a trade between \textbf{speed}, \textbf{cost}, and \textbf{safety}.}
+
+\vspace{0.4em}
+{\Large \textcolor{teal}{AdaptConfig doesn't.}}
+\end{center}
+\end{frame}
+
+% ── 5. OUR APPROACH ──────────────────────────────────────────────────────────
+\begin{frame}{Upload a spec. Get a running integration.}
+\vspace{0.3em}
+\begin{center}
+{\large
+\textbf{Spec} $\;\xrightarrow{\;\text{parse}\;}\;$ \textbf{Fields} $\;\xrightarrow{\;\text{AI + Rules}\;}\;$ \textbf{Config} $\;\xrightarrow{\;\text{simulate}\;}\;$ \textbf{Deploy}
+}
+\end{center}
+
+\vspace{0.8em}
+\begin{columns}[T]
+\begin{column}{0.30\textwidth}
+\textbf{\textcolor{teal}{Parse}}\\
+{\small PDF, YAML, JSON, DOCX. Endpoints, fields, auth, SLAs extracted.}
+\end{column}
+\begin{column}{0.34\textwidth}
+\textbf{\textcolor{teal}{Generate}}\\
+{\small GPT-4o drafts. \textbf{Rule engine overrides} with Indian fintech synonyms, fuzzy match, token overlap.}
+\end{column}
+\begin{column}{0.30\textwidth}
+\textbf{\textcolor{teal}{Simulate \& deploy}}\\
+{\small 8-step pre-deploy pipeline. Chain-test multi-call flows. One-click rollback.}
+\end{column}
+\end{columns}
+
+\vspace{0.8em}
+\begin{center}
+{\Large On a real CIBIL v2 spec: \textcolor{ok}{\textbf{28 / 28 fields mapped at 100\% in $\sim$40 s.}}}
+\end{center}
+\end{frame}
+
+% ── 6. THE MOAT ──────────────────────────────────────────────────────────────
+\begin{frame}{Why we win in \emph{banking}, not just \emph{integration}}
+\vspace{0.2em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{1. Rules override the LLM.}\\
+{\small Deterministic synonym + fuzzy + Jaccard match runs after every LLM call. The LLM is allowed to suggest --- never to silently decide. \textcolor{teal}{No hallucination reaches production.}}
+
+\vspace{0.6em}
+\textbf{2. Confidence-driven validation.}\\
+{\small Every field carries a score. Below threshold $\to$ human review. \textcolor{teal}{Banking compliance demands traceable provenance --- we ship it by default.}}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{3. Indian fintech depth, baked in.}\\
+{\small 100+ domain synonyms (CIBIL score $=$ credit\_score, Aadhaar $=$ uidai\_id, $\ldots$). Pre-built adapters for the 8 services every NBFC actually uses.}
+
+\vspace{0.6em}
+\textbf{4. Banking-grade audit \& replay.}\\
+{\small Hash-chain tamper detection on every external call $\cdot$ 8-step pre-deploy simulator $\cdot$ versioned configs with one-click rollback.}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 7. NUMBERS ───────────────────────────────────────────────────────────────
+\begin{frame}{The same engineer, 5\texttimes\ the throughput}
+\vspace{0.5em}
+\begin{center}
+{\small
+\begin{tabular}{lccc}
+\toprule
+& \textbf{Manual} & \textbf{AdaptConfig} & \textbf{Result} \\
+\midrule
+Time per integration & 2--4 weeks & $\sim$ 5 minutes & \textcolor{ok}{$>$500$\times$ faster} \\
+Field-mapping errors & Common & AI + rule-validated & \textcolor{ok}{Near zero} \\
+Pre-deploy testing & Rare & 8-step simulator & \textcolor{ok}{Always} \\
+Hallucination risk & --- & Rule engine overrides & \textcolor{ok}{Eliminated} \\
+Audit trail & Ad-hoc & Hash-chained by default & \textcolor{ok}{Banking-grade} \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+
+\vspace{0.7em}
+\begin{center}
+{\large A platform that took \textcolor{err}{6 months} to wire up now ships in \textcolor{ok}{6 weeks}.}
+\end{center}
+\end{frame}
+
+% ── 8. WHY NOW / WHO BUYS ───────────────────────────────────────────────────
+\begin{frame}{Why now}
+\vspace{0.3em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{The integration surface is exploding:}
+\begin{itemize}
+\item RBI's \textbf{Account Aggregator} framework $\to$ every NBFC must wire AA
+\item \textbf{ONDC} $\to$ commerce + credit converging
+\item \textbf{UPI 2.0, eRupee, GST 2.0} $\to$ new APIs every quarter
+\item LLM tooling \textbf{just got good enough} to draft configs --- but not good enough to be trusted alone
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\textbf{Who pays first:}
+\begin{itemize}
+\item NBFCs launching new lending products
+\item Embedded-finance startups stitching 6--10 APIs on day one
+\end{itemize}
+\vspace{0.4em}
+\begin{block}{\textcolor{teal}{Wedge}}
+NBFCs that need to ship a new loan product in \textbf{6 weeks --- not 6 months}. Pay-as-you-integrate beats the monthly-licence iPaaS model.
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ── 9. TEAM + ASK ────────────────────────────────────────────────────────────
+\begin{frame}{Built. Working. Looking for first three pilots.}
+\vspace{0.3em}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{What's already live:}
+\begin{itemize}
+\item 34 API endpoints $\cdot$ 8 adapters $\cdot$ React SPA
+\item 899 tests $\cdot$ 82\% coverage
+\item Drop-in \texttt{adaptconfig.skill.md} --- any LLM agent drives the platform
+\item GPT-4o + rule engine pipeline running end-to-end
+\end{itemize}
+
+\vspace{0.4em}
+\textbf{Team:}\\
+{\small S Akash (Lead) $\cdot$ Swayam Jain $\cdot$ Yash Kamdar \\ IIT Patna $\cdot$ Built in 6 weeks}
+\end{column}
+\begin{column}{0.48\textwidth}
+\begin{block}{\textcolor{teal}{What we're asking for}}
+\begin{itemize}
+\item 3 NBFC design-pilot partners
+\item Intros to RBI sandbox cohort teams
+\item Feedback on which adapter ships next
+\end{itemize}
+\end{block}
+
+\vspace{0.5em}
+\begin{center}
+{\large \textcolor{teal}{\textbf{The integration layer for Indian fintech.}}}
+
+\vspace{0.3em}
+{\scriptsize\color{ts} \url{https://github.com/Akasxh/adaptconfig}}
+\end{center}
+\end{column}
+\end{columns}
+\end{frame}
+
+\end{document}
